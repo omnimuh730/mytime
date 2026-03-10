@@ -13,7 +13,7 @@ mod services;
 
 use app_state::AppState;
 use config::AppPaths;
-use tauri::Manager;
+use tauri::{AppHandle, Manager, tray::{TrayIconBuilder, TrayIconEvent, TrayIcon} };
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -62,11 +62,37 @@ pub fn run() {
 
             info!("registered backend foundation state");
 
+            // Start background collectors.
             app_usage_monitor::start_global_app_usage_monitor(app.handle().clone());
             input_monitor::start_global_input_monitor(app.handle().clone());
             network_monitor::start_network_monitor();
 
+            // Create a system tray icon so the app can live in the tray when "closed".
+            let app_handle = app.handle().clone();
+            if let Some(icon) = app_handle.default_window_icon() {
+                let _tray: TrayIcon = TrayIconBuilder::new()
+                    .icon(icon.clone())
+                    .on_tray_icon_event(|tray, event| {
+                        // Single left click on tray icon restores the main window.
+                        if let TrayIconEvent::Click { .. } = event {
+                            if let Some(window) = tray.app_handle().get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    })
+                    .build(app)?;
+            }
+
             Ok(())
+        })
+        // When the user clicks the window close button, hide to tray instead of quitting.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Hide the window and keep the process + collectors running.
+                let _ = window.hide();
+                api.prevent_close();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             ipc::get_app_status,
