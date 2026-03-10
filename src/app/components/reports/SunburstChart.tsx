@@ -171,10 +171,15 @@ function formatTime(minutes: number): string {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
-export function SunburstChart() {
+interface SunburstChartProps {
+  allApps?: AppEntry[];
+}
+
+export function SunburstChart({ allApps }: SunburstChartProps = {}) {
   const [drillPath, setDrillPath] = useState<string[]>([]);
   const [hoveredSlice, setHoveredSlice] = useState<SliceInfo | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const resolvedApps = allApps ?? ALL_APPS;
 
   // Stateful categories & assignments
   const [categories, setCategories] =
@@ -188,7 +193,7 @@ export function SunburstChart() {
     const result: SunburstNode[] = [];
 
     for (const cat of categories) {
-      const catApps = ALL_APPS.filter(
+      const catApps = resolvedApps.filter(
         (app) => (assignments[app.id] || "cat-others") === cat.id
       );
       if (catApps.length === 0) continue;
@@ -211,7 +216,7 @@ export function SunburstChart() {
     }
 
     return result.sort((a, b) => b.minutes - a.minutes);
-  }, [categories, assignments]);
+  }, [categories, assignments, resolvedApps]);
 
   const cx = 200;
   const cy = 200;
@@ -541,7 +546,7 @@ export function SunburstChart() {
         onClose={() => setModalOpen(false)}
         categories={categories}
         appAssignments={assignments}
-        allApps={ALL_APPS}
+        allApps={resolvedApps}
         onSave={handleModalSave}
       />
     </div>

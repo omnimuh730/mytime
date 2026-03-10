@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import type { ReactNode } from "react";
 import {
   Mouse,
@@ -40,6 +40,8 @@ import { NetworkQuotaBurndown } from "./components/network/NetworkQuotaBurndown"
 import { LivePacketMatrix } from "./components/network/LivePacketMatrix";
 import { SunburstChart } from "./components/reports/SunburstChart";
 import { HelpPage } from "./components/HelpPage";
+import { toSunburstApps, toTimelineBlocks } from "./activityAppUsage";
+import { useActivityAppUsage } from "./hooks/useActivityAppUsage";
 import { useDashboardSummary } from "./hooks/useDashboardSummary";
 import { useAppStatus } from "./hooks/useAppStatus";
 import type { DashboardSummaryDto } from "./types/backend";
@@ -289,49 +291,91 @@ function DashboardView({ summary }: { summary: DashboardSummaryDto | null }) {
 }
 
 function ActivityView() {
+  const { summary, isLoading, error, refresh } = useDashboardSummary();
+  const {
+    data: appUsageData,
+    isLoading: isAppUsageLoading,
+    error: appUsageError,
+  } = useActivityAppUsage();
+
+  // Keep top 4 cards updated with latest input stats
+  useEffect(() => {
+    const id = setInterval(() => void refresh(), 4000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const realTimelineBlocks = useMemo(
+    () => toTimelineBlocks(appUsageData?.sessions ?? []),
+    [appUsageData],
+  );
+  const realSunburstApps = useMemo(
+    () => toSunburstApps(appUsageData?.apps ?? []),
+    [appUsageData],
+  );
+
+  const activeTime = summary?.metrics.activeTimeToday?.value ?? "—";
+  const mouseEvents = summary?.metrics.mouseEvents?.value ?? "—";
+  const keystrokes = summary?.metrics.keystrokes?.value ?? "—";
+  const activeTimeChange = summary?.metrics.activeTimeToday?.change ?? undefined;
+  const activeTimeTrend = summary?.metrics.activeTimeToday?.trend;
+  const mouseChange = summary?.metrics.mouseEvents?.change ?? undefined;
+  const mouseTrend = summary?.metrics.mouseEvents?.trend;
+  const keystrokesChange = summary?.metrics.keystrokes?.change ?? undefined;
+  const keystrokesTrend = summary?.metrics.keystrokes?.trend;
+
   return (
     <div className="space-y-4 sm:space-y-6">
+      {error && (
+        <div className="rounded-xl border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      {appUsageError && (
+        <div className="rounded-xl border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          {appUsageError}
+        </div>
+      )}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <StatCard
           title="Total Active Time"
-          value="6h 42m"
-          change="+12%"
-          trend="up"
+          value={isLoading ? "…" : activeTime}
+          change={activeTimeChange}
+          trend={activeTimeTrend ?? "up"}
           icon={<Timer className="w-5 h-5" />}
           color="bg-primary/10 text-primary"
         />
         <StatCard
-          title="Mouse Clicks"
-          value="3,284"
-          change="+5%"
-          trend="up"
+          title="Mouse Events"
+          value={isLoading ? "…" : mouseEvents}
+          change={mouseChange}
+          trend={mouseTrend ?? "up"}
           icon={<Mouse className="w-5 h-5" />}
           color="bg-chart-2/10 text-chart-2"
         />
         <StatCard
-          title="Keystrokes/Min"
-          value="52"
-          change="+18%"
-          trend="up"
+          title="Keystrokes"
+          value={isLoading ? "…" : keystrokes}
+          change={keystrokesChange}
+          trend={keystrokesTrend ?? "up"}
           icon={<Keyboard className="w-5 h-5" />}
           color="bg-chart-3/10 text-chart-3"
         />
         <StatCard
           title="Idle Periods"
-          value="4"
-          change="-2"
-          trend="down"
+          value="—"
           icon={<Activity className="w-5 h-5" />}
           color="bg-chart-5/10 text-chart-5"
         />
       </div>
 
-      {/* Multi-Track Timeline Editor */}
-      <TimelineEditor />
+      {/* Multi-Track Timeline Editor (timebar + tracks + minimap) */}
+      <div className="min-h-[320px]">
+        <TimelineEditor blocks={realTimelineBlocks} isLoading={isAppUsageLoading} />
+      </div>
 
       {/* App Usage Sunburst + Live Activity Feed */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-        <SunburstChart />
+        <SunburstChart allApps={realSunburstApps} />
         <LiveActivityFeed />
       </div>
 

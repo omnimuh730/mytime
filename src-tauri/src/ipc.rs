@@ -2,10 +2,11 @@ use tauri::State;
 
 use crate::{
     app_state::AppState,
+    app_usage_monitor,
     input_aggregator,
     models::{
-        ActivityTimelineDto, AppStatusDto, DashboardSummaryDto, LiveFeedEventDto,
-        NetworkSummaryDto,
+        ActivityAppUsageDto, ActivityTimelineDto, AppStatusDto, DashboardSummaryDto,
+        LiveFeedEventDto, NetworkSummaryDto,
     },
     services,
 };
@@ -37,6 +38,16 @@ pub fn get_input_stats() -> Result<crate::models::InputStatsDto, String> {
 #[tauri::command]
 pub fn get_recent_input_events(limit: Option<u32>) -> Result<Vec<LiveFeedEventDto>, String> {
     Ok(input_aggregator::get_recent_events(limit))
+}
+
+#[tauri::command]
+pub fn get_activity_heatmap() -> Result<crate::models::ActivityHeatmapDto, String> {
+    Ok(services::build_activity_heatmap())
+}
+
+#[tauri::command]
+pub fn get_activity_app_usage(limit: Option<u32>) -> Result<ActivityAppUsageDto, String> {
+    Ok(app_usage_monitor::get_activity_app_usage(limit))
 }
 
 #[tauri::command]

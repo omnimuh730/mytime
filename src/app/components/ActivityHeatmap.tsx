@@ -1,30 +1,10 @@
 import { useState } from "react";
+import { useActivityHeatmap } from "../hooks/useActivityHeatmap";
 
 const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const hours = Array.from({ length: 24 }, (_, i) =>
   i.toString().padStart(2, "0")
 );
-
-// Generate mock heatmap data
-const generateHeatmapData = () => {
-  return days.map((day) =>
-    hours.map((hour) => {
-      const h = parseInt(hour);
-      const isWeekend = day === "Sat" || day === "Sun";
-      let base = 0;
-      if (h >= 9 && h <= 17 && !isWeekend) {
-        base = 50 + Math.random() * 50;
-      } else if (h >= 7 && h <= 22) {
-        base = 10 + Math.random() * 30;
-      } else {
-        base = Math.random() * 10;
-      }
-      return Math.round(base);
-    })
-  );
-};
-
-const heatmapData = generateHeatmapData();
 
 const getColor = (value: number) => {
   if (value === 0) return "rgba(99, 102, 241, 0.03)";
@@ -41,9 +21,17 @@ export function ActivityHeatmap() {
     day: number;
     hour: number;
   } | null>(null);
+  const { grid, isLoading, error } = useActivityHeatmap();
+
+  const heatmapData = grid ?? [];
 
   return (
     <div className="bg-card rounded-2xl border border-border p-4 sm:p-6">
+      {error && (
+        <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      )}
       <div className="flex items-center justify-between mb-5">
         <div>
           <h3 className="text-foreground">Activity Heatmap</h3>
@@ -65,6 +53,11 @@ export function ActivityHeatmap() {
       </div>
 
       <div className="overflow-x-auto">
+        {isLoading && heatmapData.length === 0 ? (
+          <div className="min-h-[200px] flex items-center justify-center text-muted-foreground text-sm">
+            Loading heatmap…
+          </div>
+        ) : (
         <div className="min-w-[600px]">
           {/* Hour labels */}
           <div className="flex mb-1 ml-10">
@@ -91,7 +84,8 @@ export function ActivityHeatmap() {
               </span>
               <div className="flex flex-1 gap-px">
                 {hours.map((_, hourIndex) => {
-                  const value = heatmapData[dayIndex][hourIndex];
+                  const value =
+                    heatmapData[dayIndex]?.[hourIndex] ?? 0;
                   const isHovered =
                     hoveredCell?.day === dayIndex &&
                     hoveredCell?.hour === hourIndex;
@@ -126,6 +120,7 @@ export function ActivityHeatmap() {
             </div>
           ))}
         </div>
+        )}
       </div>
     </div>
   );

@@ -122,3 +122,17 @@ export function AppSummarySkeletonRow() {
     </div>
   );
 }
+
+/** Live Activity Feed skeleton row — icon, description, detail, timestamp */
+export function ActivityFeedSkeletonRow() {
+  return (
+    <div className="flex items-center gap-3 p-2.5 rounded-xl">
+      <SkeletonPulse className="w-7 h-7 rounded-lg shrink-0" />
+      <div className="flex-1 min-w-0 space-y-1.5">
+        <SkeletonPulse className="h-3 w-28" />
+        <SkeletonPulse className="h-3 w-20" />
+      </div>
+      <SkeletonPulse className="h-3 w-12 shrink-0 tabular-nums" />
+    </div>
+  );
+}

@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useCallback } from "react";
 import {
   BarChart,
   Bar,
@@ -11,80 +11,10 @@ import {
   ReferenceLine,
 } from "recharts";
 import { PremiumDateRangePicker } from "./ui/PremiumDateRangePicker";
+import { useActivityTimeline } from "../hooks/useActivityTimeline";
 
-// Generate deterministic mock data for any date range — active vs inactive hours per day
-function generateActivityData(startDate: string, endDate: string) {
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  const dayCount = Math.max(
-    1,
-    Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1
-  );
-  const data: {
-    label: string;
-    active: number;
-    inactive: number;
-    fullDate: string;
-  }[] = [];
-
-  if (dayCount <= 1) {
-    // Single day — show hourly active/inactive blocks (each bar = 1 hour)
-    for (let h = 0; h < 24; h++) {
-      const seed =
-        (start.getDate() * 100 + h * 7 + start.getMonth() * 31) % 100;
-      const isWorkHour = h >= 8 && h <= 17;
-      const isExtended = h >= 6 && h <= 20;
-      const activeMin = isWorkHour
-        ? Math.round(35 + (seed % 25))
-        : isExtended
-        ? Math.round(10 + (seed % 15))
-        : Math.round(seed % 5);
-      data.push({
-        label: `${String(h).padStart(2, "0")}:00`,
-        active: activeMin,
-        inactive: 60 - activeMin,
-        fullDate: `${start.toISOString().slice(0, 10)} ${String(h).padStart(2, "0")}:00`,
-      });
-    }
-  } else if (dayCount <= 31) {
-    // Daily view — active hours per day out of 24
-    for (let d = 0; d < dayCount; d++) {
-      const date = new Date(start);
-      date.setDate(date.getDate() + d);
-      const seed =
-        (date.getDate() * 17 + date.getMonth() * 31 + date.getFullYear()) %
-        100;
-      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-      const baseHours = isWeekend ? 2 + (seed % 4) : 5 + (seed % 5);
-      const activeHours = Math.min(24, Math.max(0, baseHours));
-      const dayLabel =
-        dayCount <= 14
-          ? `${date.getMonth() + 1}/${date.getDate()}`
-          : `${date.getDate()}`;
-      data.push({
-        label: dayLabel,
-        active: activeHours,
-        inactive: 24 - activeHours,
-        fullDate: date.toISOString().slice(0, 10),
-      });
-    }
-  } else {
-    // Weekly aggregates for long ranges — avg active hours/day
-    const weeks = Math.ceil(dayCount / 7);
-    for (let w = 0; w < weeks; w++) {
-      const date = new Date(start);
-      date.setDate(date.getDate() + w * 7);
-      const seed = (date.getDate() * 13 + w * 23 + date.getMonth() * 7) % 100;
-      const avgActive = Math.min(24, Math.max(1, 4 + (seed % 7)));
-      data.push({
-        label: `W${w + 1}`,
-        active: avgActive,
-        inactive: 24 - avgActive,
-        fullDate: `Week of ${date.getMonth() + 1}/${date.getDate()}`,
-      });
-    }
-  }
-  return data;
+function formatDate(d: Date) {
+  return d.toISOString().slice(0, 10);
 }
 
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -128,13 +58,12 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   return null;
 };
 
-// Today's date for defaults
-const TODAY = "2026-03-09";
-const WEEK_AGO = "2026-03-03";
-
 export function ActivityTimeline() {
-  const [startDate, setStartDate] = useState(WEEK_AGO);
-  const [endDate, setEndDate] = useState(TODAY);
+  const today = new Date();
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 6);
+  const [startDate, setStartDate] = useState(formatDate(weekAgo));
+  const [endDate, setEndDate] = useState(formatDate(today));
 
   const handleStartChange = useCallback((val: string) => {
     setStartDate(val);
@@ -144,30 +73,23 @@ export function ActivityTimeline() {
     setEndDate(val);
   }, []);
 
-  const data = useMemo(
-    () => generateActivityData(startDate, endDate),
-    [startDate, endDate]
-  );
-
-  const dayCount = Math.max(
-    1,
-    Math.round(
-      (new Date(endDate).getTime() - new Date(startDate).getTime()) /
-        (1000 * 60 * 60 * 24)
-    ) + 1
-  );
-  const isHourly = dayCount <= 1;
-  const maxVal = isHourly ? 60 : 24;
-  const yLabel = isHourly ? "Minutes" : "Hours";
-
-  // Compute average active
-  const avgActive =
-    data.length > 0
-      ? +(data.reduce((s, d) => s + d.active, 0) / data.length).toFixed(1)
-      : 0;
+  const {
+    data,
+    isHourly,
+    maxValue: maxVal,
+    yLabel,
+    avgActive,
+    isLoading,
+    error,
+  } = useActivityTimeline(startDate, endDate);
 
   return (
     <div className="bg-card rounded-2xl border border-border p-4 sm:p-6">
+      {error && (
+        <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-0 mb-5">
         <div>
           <h3 className="text-foreground">Activity Timeline</h3>
@@ -199,7 +121,7 @@ export function ActivityTimeline() {
 
       <div className="h-[160px] sm:h-[180px] min-w-0">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} stackOffset="none">
+          <BarChart data={isLoading ? [] : data} stackOffset="none">
             <CartesianGrid
               key="at-grid"
               strokeDasharray="3 3"

@@ -7,69 +7,18 @@ import {
   Search,
   LayoutList,
 } from "lucide-react";
-import {
-  type TimelineBlock,
-  formatMinutes,
-  formatDuration,
-  APP_COLORS,
-  APP_ICONS,
-} from "./timeline-data";
-import {
-  AppUsageSkeletonRow,
-  AppSummarySkeletonRow,
-} from "../ui/SkeletonRows";
+import { type TimelineBlock, formatMinutes, formatDuration } from "./timeline-data";
+import { AppUsageSkeletonRow, AppSummarySkeletonRow } from "../ui/SkeletonRows";
 
 interface AppUsageListProps {
   blocks: TimelineBlock[];
+  isLoading?: boolean;
   onBlockSelect: (block: TimelineBlock) => void;
   selectedBlockIds: Set<string>;
 }
 
 type SortField = "title" | "start" | "end" | "duration" | "app";
 type SortDir = "asc" | "desc";
-
-// Extra mock data generator for infinite scroll
-const EXTRA_APPS = [
-  { app: "VS Code", titles: ["Editing App.tsx", "Debugging server.ts", "Reviewing PR #142", "Refactoring utils", "Writing tests"] },
-  { app: "Google Chrome", titles: ["Stack Overflow", "GitHub Issues", "MDN Docs", "Tailwind Docs", "React Reference"] },
-  { app: "Slack", titles: ["#engineering channel", "DM with Sarah", "Stand-up thread", "Code review discussion", "Bug report triage"] },
-  { app: "Figma", titles: ["Dashboard redesign", "Component library", "Icon system", "Mobile wireframes", "Design review"] },
-  { app: "Terminal", titles: ["npm run dev", "git rebase", "docker compose up", "Running migrations", "SSH to staging"] },
-  { app: "Notion", titles: ["Sprint planning", "Meeting notes", "Architecture doc", "Roadmap update", "Research notes"] },
-  { app: "Discord", titles: ["Dev community", "Voice chat", "Bug report channel", "Feedback thread", "Team standup"] },
-  { app: "Spotify", titles: ["Focus playlist", "Lo-fi beats", "Ambient coding", "Podcast episode", "Deep work mix"] },
-  { app: "Postman", titles: ["Testing auth API", "GraphQL queries", "Webhook testing", "Collection runner", "Environment setup"] },
-  { app: "Docker", titles: ["Container logs", "Image build", "Compose restart", "Volume management", "Network inspect"] },
-];
-
-const TAGS = [undefined, "deep-work", "meeting", "review", "break", "research", "deploy", "debug"];
-
-function generateExtraBlocks(startIdx: number, count: number): TimelineBlock[] {
-  const blocks: TimelineBlock[] = [];
-  for (let i = 0; i < count; i++) {
-    const idx = startIdx + i;
-    const appEntry = EXTRA_APPS[idx % EXTRA_APPS.length];
-    const title = appEntry.titles[idx % appEntry.titles.length];
-    const startMin = 420 + (idx * 17) % 720; // between 7am-7pm
-    const duration = 5 + Math.floor(Math.random() * 55);
-    blocks.push({
-      id: `extra-${idx}-${Date.now()}`,
-      app: appEntry.app,
-      title: `${title} (${idx + 1})`,
-      startMin,
-      endMin: startMin + duration,
-      color: APP_COLORS[appEntry.app] || "#6366f1",
-      icon: APP_ICONS[appEntry.app] || "📱",
-      category: "work",
-      keystrokes: Math.floor(Math.random() * 2000),
-      clicks: Math.floor(Math.random() * 500),
-      downloadMB: Math.round(Math.random() * 50 * 10) / 10,
-      uploadMB: Math.round(Math.random() * 20 * 10) / 10,
-      tag: TAGS[idx % TAGS.length],
-    });
-  }
-  return blocks;
-}
 
 // Simple infinite scroll hook for this component (works with growing block array)
 function useListInfiniteScroll(
@@ -112,7 +61,8 @@ function useListInfiniteScroll(
 }
 
 export function AppUsageList({
-  blocks: initialBlocks,
+  blocks,
+  isLoading = false,
   onBlockSelect,
   selectedBlockIds,
 }: AppUsageListProps) {
@@ -120,22 +70,14 @@ export function AppUsageList({
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [filterText, setFilterText] = useState("");
   const [filterApp, setFilterApp] = useState<string | null>(null);
-  const [extraBlocks, setExtraBlocks] = useState<TimelineBlock[]>([]);
-  const extraGenRef = useRef(0);
 
-  // All blocks = initial + generated extras
-  const allBlocks = useMemo(
-    () => [...initialBlocks, ...extraBlocks],
-    [initialBlocks, extraBlocks]
-  );
-
-  // Aggregate app stats (from all blocks)
+  // Aggregate app stats (from real blocks)
   const appStats = useMemo(() => {
     const stats: Record<
       string,
       { app: string; totalMins: number; count: number; color: string; icon: string }
     > = {};
-    allBlocks.forEach((b) => {
+    blocks.forEach((b) => {
       if (!stats[b.app]) {
         stats[b.app] = { app: b.app, totalMins: 0, count: 0, color: b.color, icon: b.icon };
       }
@@ -143,13 +85,13 @@ export function AppUsageList({
       stats[b.app].count++;
     });
     return Object.values(stats).sort((a, b) => b.totalMins - a.totalMins);
-  }, [allBlocks]);
+  }, [blocks]);
 
   const totalMins = appStats.reduce((s, a) => s + a.totalMins, 0);
 
   // Filtered & sorted blocks
   const filteredBlocks = useMemo(() => {
-    let result = [...allBlocks];
+    let result = [...blocks];
     if (filterText) {
       const lower = filterText.toLowerCase();
       result = result.filter(
@@ -169,7 +111,7 @@ export function AppUsageList({
       return sortDir === "asc" ? cmp : -cmp;
     });
     return result;
-  }, [allBlocks, filterText, filterApp, sortField, sortDir]);
+  }, [blocks, filterText, filterApp, sortField, sortDir]);
 
   // Main list infinite scroll
   const {
@@ -192,15 +134,6 @@ export function AppUsageList({
     loadDelay: 500,
     threshold: 60,
   });
-
-  // Generate more blocks when main list nears end
-  useEffect(() => {
-    if (mainVisible >= filteredBlocks.length - 5 && !mainLoading) {
-      const batch = generateExtraBlocks(extraGenRef.current, 12);
-      extraGenRef.current += 12;
-      setExtraBlocks((prev) => [...prev, ...batch]);
-    }
-  }, [mainVisible, filteredBlocks.length, mainLoading]);
 
   const toggleSort = (field: SortField) => {
     if (sortField === field) {
@@ -341,9 +274,14 @@ export function AppUsageList({
               })}
 
               {/* Skeleton loading rows */}
-              {mainLoading && Array.from({ length: 4 }).map((_, i) => (
+              {(isLoading || mainLoading) && Array.from({ length: 4 }).map((_, i) => (
                 <AppUsageSkeletonRow key={`skel-${i}`} />
               ))}
+              {!isLoading && !mainLoading && visibleBlocks.length === 0 && (
+                <div className="px-4 py-8 text-sm text-muted-foreground">
+                  No real application sessions captured yet. Focus a few windows and this log will populate.
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -394,7 +332,7 @@ export function AppUsageList({
             })}
 
             {/* Summary skeleton rows */}
-            {summaryLoading && Array.from({ length: 3 }).map((_, i) => (
+            {(isLoading || summaryLoading) && Array.from({ length: 3 }).map((_, i) => (
               <AppSummarySkeletonRow key={`skel-sum-${i}`} />
             ))}
           </div>

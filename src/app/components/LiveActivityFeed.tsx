@@ -13,6 +13,7 @@ import {
 } from "../api/inputMonitor";
 import type { InputMonitorEventDto } from "../types/backend";
 import { hasTauriRuntime } from "../api/tauri";
+import { ActivityFeedSkeletonRow } from "./ui/SkeletonRows";
 
 interface ActivityEvent {
   id: number;
@@ -69,28 +70,34 @@ const colorMap = {
   active: { bg: "bg-emerald-500/10", text: "text-emerald-400" },
 };
 
+const MAX_VISIBLE_LOGS = 8;
+const SKELETON_ROWS = 6;
+
 export function LiveActivityFeed() {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const nextIdRef = useRef(1);
 
   useEffect(() => {
     if (hasTauriRuntime()) {
-      getRecentInputEvents(50).then((list) => {
-        setEvents(
-          list.map((e) => ({
-            id: e.id,
-            type: e.eventType,
-            description: e.description,
-            timestamp: e.timestamp,
-            detail: e.detail ?? undefined,
-          })),
-        );
-      });
+      getRecentInputEvents(MAX_VISIBLE_LOGS)
+        .then((list) => {
+          setEvents(
+            list.slice(0, MAX_VISIBLE_LOGS).map((e) => ({
+              id: e.id,
+              type: e.eventType,
+              description: e.description,
+              timestamp: e.timestamp,
+              detail: e.detail ?? undefined,
+            })),
+          );
+        })
+        .finally(() => setIsLoading(false));
 
       const unsub = subscribeToInputMonitor((payload) => {
         const id = nextIdRef.current++;
         const activity = inputEventToActivityEvent(payload, id);
-        setEvents((prev) => [activity, ...prev.slice(0, 99)]);
+        setEvents((prev) => [activity, ...prev.slice(0, MAX_VISIBLE_LOGS - 1)]);
       });
       return () => {
         unsub.then((fn) => fn());
@@ -98,12 +105,13 @@ export function LiveActivityFeed() {
     }
 
     setEvents([]);
+    setIsLoading(false);
     return () => {};
   }, []);
 
   return (
-    <div className="bg-card rounded-2xl border border-border p-4 sm:p-6 flex flex-col h-full">
-      <div className="flex items-center justify-between mb-5">
+    <div className="bg-card rounded-2xl border border-border p-4 sm:p-6 flex flex-col max-h-[480px] min-h-0">
+      <div className="flex items-center justify-between mb-5 shrink-0">
         <div>
           <h3 className="text-foreground">Live Activity Feed</h3>
           <p className="text-muted-foreground text-xs mt-1">
@@ -116,37 +124,43 @@ export function LiveActivityFeed() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-1 overscroll-y-contain">
-        {events.map((event, index) => {
-          const Icon = iconMap[event.type];
-          const colors = colorMap[event.type];
-          return (
-            <div
-              key={event.id}
-              className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-secondary/50 transition-all duration-200"
-              style={{
-                opacity: 1 - index * 0.08,
-              }}
-            >
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-1 overscroll-y-contain pr-1">
+        {isLoading ? (
+          Array.from({ length: SKELETON_ROWS }, (_, i) => (
+            <ActivityFeedSkeletonRow key={`skeleton-${i}`} />
+          ))
+        ) : (
+          events.map((event, index) => {
+            const Icon = iconMap[event.type];
+            const colors = colorMap[event.type];
+            return (
               <div
-                className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${colors.bg}`}
+                key={event.id}
+                className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-secondary/50 transition-all duration-200 shrink-0"
+                style={{
+                  opacity: 1 - index * 0.02,
+                }}
               >
-                <Icon className={`w-3.5 h-3.5 ${colors.text}`} />
+                <div
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${colors.bg}`}
+                >
+                  <Icon className={`w-3.5 h-3.5 ${colors.text}`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-foreground truncate">
+                    {event.description}
+                  </p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {event.detail}
+                  </p>
+                </div>
+                <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                  {event.timestamp}
+                </span>
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-foreground truncate">
-                  {event.description}
-                </p>
-                <p className="text-xs text-muted-foreground truncate">
-                  {event.detail}
-                </p>
-              </div>
-              <span className="text-xs text-muted-foreground tabular-nums shrink-0">
-                {event.timestamp}
-              </span>
-            </div>
-          );
-        })}
+            );
+          })
+        )}
       </div>
     </div>
   );

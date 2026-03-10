@@ -128,14 +128,15 @@ export function TimelineTracks({
     });
   }, [viewSpanMinutes]);
 
-  // Container width for rendering
+  // Container width for rendering (min 400 so timebar/tracks always have room)
   const [containerWidth, setContainerWidth] = useState(900);
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const obs = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        setContainerWidth(entry.contentRect.width);
+        const w = entry.contentRect.width;
+        setContainerWidth(w > 0 ? w : 900);
       }
     });
     obs.observe(el);
@@ -325,9 +326,12 @@ export function TimelineTracks({
   }, [zoom, viewStart, containerWidth, onZoomChange]);
 
   return (
-    <div className="bg-card rounded-xl border border-border overflow-hidden" ref={containerRef}>
+    <div
+      className="bg-card rounded-xl border border-border overflow-hidden min-w-0 w-full"
+      ref={containerRef}
+    >
       {/* Time Ruler + Tracks */}
-      <div className="overflow-hidden" ref={tracksAreaRef}>
+      <div className="overflow-hidden min-h-[200px]" ref={tracksAreaRef}>
         <div className="relative" style={{ width: containerWidth }}>
           {/* Ruler */}
           <div className="h-7 relative bg-secondary/30 border-b border-border">

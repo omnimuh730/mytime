@@ -11,9 +11,17 @@ import {
   generateActivityStatus,
 } from "./timeline-data";
 
-export function TimelineEditor() {
+interface TimelineEditorProps {
+  blocks?: TimelineBlock[];
+  isLoading?: boolean;
+}
+
+export function TimelineEditor({
+  blocks: externalBlocks,
+  isLoading = false,
+}: TimelineEditorProps) {
   const [blocks, setBlocks] = useState<TimelineBlock[]>(() =>
-    generateTimelineBlocks()
+    externalBlocks ?? generateTimelineBlocks()
   );
   const [zoom, setZoom] = useState(1.5);
   const [visibleTracks, setVisibleTracks] = useState({
@@ -30,6 +38,7 @@ export function TimelineEditor() {
   const apmData = useMemo(() => generateAPMData(), []);
   const markers = useMemo(() => generateMarkers(), []);
   const activityStatus = useMemo(() => generateActivityStatus(), []);
+  const resolvedBlocks = externalBlocks ?? blocks;
 
   const handleSelectBlock = useCallback(
     (block: TimelineBlock) => {
@@ -51,7 +60,7 @@ export function TimelineEditor() {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 w-full min-w-0">
       {/* Toolbar */}
       <TimelineToolbar
         zoom={zoom}
@@ -63,7 +72,7 @@ export function TimelineEditor() {
 
       {/* Multi-Track Timeline */}
       <TimelineTracks
-        blocks={blocks}
+        blocks={resolvedBlocks}
         networkData={networkData}
         apmData={apmData}
         markers={markers}
@@ -77,7 +86,8 @@ export function TimelineEditor() {
 
       {/* App Usage Detail List */}
       <AppUsageList
-        blocks={blocks}
+        blocks={resolvedBlocks}
+        isLoading={isLoading}
         onBlockSelect={handleSelectBlock}
         selectedBlockIds={selectedBlockIds}
       />

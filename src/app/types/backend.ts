@@ -86,3 +86,32 @@ export interface LiveFeedEventDto {
   timestamp: string;
   detail?: string | null;
 }
+
+/** 7 days (Mon–Sun) × 24 hours, activity intensity 0–100. */
+export interface ActivityHeatmapDto {
+  grid: number[][];
+}
+
+export interface AppUsageSessionDto {
+  id: number;
+  appId: string;
+  appName: string;
+  title: string;
+  pid: number;
+  startedAtMs: number;
+  endedAtMs: number;
+  durationMs: number;
+}
+
+export interface AppUsageSummaryDto {
+  appId: string;
+  appName: string;
+  sessionCount: number;
+  totalDurationMs: number;
+}
+
+export interface ActivityAppUsageDto {
+  generatedAt: string;
+  sessions: AppUsageSessionDto[];
+  apps: AppUsageSummaryDto[];
+}

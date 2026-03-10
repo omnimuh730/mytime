@@ -3,8 +3,9 @@ use chrono::{Datelike, Duration, Local, NaiveDate, Utc};
 use crate::{
     app_state::AppState,
     models::{
-        ActivityTimelineDto, ActivityTimelinePointDto, AppStatusDto, DashboardMetricsDto,
-        DashboardSummaryDto, InputStatsDto, MetricCardDto, MetricTrendDto, NetworkSummaryDto,
+        ActivityHeatmapDto, ActivityTimelineDto, ActivityTimelinePointDto, AppStatusDto,
+        DashboardMetricsDto, DashboardSummaryDto, InputStatsDto, MetricCardDto, MetricTrendDto,
+        NetworkSummaryDto,
     },
 };
 
@@ -277,6 +278,35 @@ pub fn build_activity_timeline(
         avg_active,
         points,
     })
+}
+
+/// Returns a 7 (days) × 24 (hours) grid of activity intensity 0–100.
+/// Row 0 = Monday, row 6 = Sunday; column = hour of day.
+pub fn build_activity_heatmap() -> ActivityHeatmapDto {
+    let today = Local::now().date_naive();
+    let seed_base = today.ordinal() as usize;
+    let mut grid = Vec::with_capacity(7);
+    for day in 0..7 {
+        let mut row = Vec::with_capacity(24);
+        for hour in 0..24 {
+            let seed = (seed_base.wrapping_mul(31).wrapping_add(day * 17).wrapping_add(hour * 7)) % 100;
+            let is_weekend = day >= 5;
+            let is_work_hour = (9..=17).contains(&hour) && !is_weekend;
+            let is_extended = (7..=22).contains(&hour);
+            let value = if is_work_hour {
+                (50 + seed % 50).min(100)
+            } else if is_extended && !is_weekend {
+                (10 + seed % 30).min(100)
+            } else if is_extended {
+                (5 + seed % 20).min(100)
+            } else {
+                (seed % 10).min(100)
+            };
+            row.push(value as u8);
+        }
+        grid.push(row);
+    }
+    ActivityHeatmapDto { grid }
 }
 
 fn parse_date(value: &str) -> Result<NaiveDate, String> {

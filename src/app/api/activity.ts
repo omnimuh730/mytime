@@ -1,4 +1,8 @@
-import type { ActivityTimelineDto } from "../types/backend";
+import type {
+  ActivityAppUsageDto,
+  ActivityHeatmapDto,
+  ActivityTimelineDto,
+} from "../types/backend";
 import { invokeWithFallback } from "./tauri";
 
 function createFallbackTimeline(
@@ -33,5 +37,40 @@ export function getActivityTimeline(startDate?: string, endDate?: string) {
       start_date: startDate,
       end_date: endDate,
     },
+  );
+}
+
+const fallbackHeatmapGrid = (): number[][] => {
+  const days = 7;
+  const hours = 24;
+  return Array.from({ length: days }, (_, day) =>
+    Array.from({ length: hours }, (_, hour) => {
+      const isWeekend = day >= 5;
+      const isWorkHour = hour >= 9 && hour <= 17 && !isWeekend;
+      const isExtended = hour >= 7 && hour <= 22;
+      if (isWorkHour) return 50 + Math.floor(Math.random() * 50);
+      if (isExtended && !isWeekend) return 10 + Math.floor(Math.random() * 30);
+      if (isExtended) return 5 + Math.floor(Math.random() * 20);
+      return Math.floor(Math.random() * 10);
+    }),
+  );
+};
+
+export function getActivityHeatmap() {
+  return invokeWithFallback<ActivityHeatmapDto>(
+    "get_activity_heatmap",
+    () => ({ grid: fallbackHeatmapGrid() }),
+  );
+}
+
+export function getActivityAppUsage(limit = 100) {
+  return invokeWithFallback<ActivityAppUsageDto>(
+    "get_activity_app_usage",
+    () => ({
+      generatedAt: new Date().toISOString(),
+      sessions: [],
+      apps: [],
+    }),
+    { limit },
   );
 }

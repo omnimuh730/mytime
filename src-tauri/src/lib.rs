@@ -1,6 +1,7 @@
 use std::{error::Error, path::Path, sync::OnceLock};
 
 mod app_state;
+mod app_usage_monitor;
 mod config;
 mod input_aggregator;
 mod input_monitor;
@@ -56,6 +57,7 @@ pub fn run() {
 
             info!("registered backend foundation state");
 
+            app_usage_monitor::start_global_app_usage_monitor(app.handle().clone());
             input_monitor::start_global_input_monitor(app.handle().clone());
 
             Ok(())
@@ -65,6 +67,8 @@ pub fn run() {
             ipc::get_dashboard_summary,
             ipc::get_input_stats,
             ipc::get_recent_input_events,
+            ipc::get_activity_app_usage,
+            ipc::get_activity_heatmap,
             ipc::get_activity_timeline,
             ipc::get_network_summary
         ])

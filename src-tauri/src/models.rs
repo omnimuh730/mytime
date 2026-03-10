@@ -104,3 +104,41 @@ pub struct LiveFeedEventDto {
     pub timestamp: String,
     pub detail: Option<String>,
 }
+
+/// 7 days (Mon–Sun) × 24 hours, activity intensity 0–100.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityHeatmapDto {
+    /// Row index 0 = Monday, 6 = Sunday; column index 0 = 00:00, 23 = 23:00.
+    pub grid: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUsageSessionDto {
+    pub id: u64,
+    pub app_id: String,
+    pub app_name: String,
+    pub title: String,
+    pub pid: u32,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub duration_ms: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUsageSummaryDto {
+    pub app_id: String,
+    pub app_name: String,
+    pub session_count: u32,
+    pub total_duration_ms: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityAppUsageDto {
+    pub generated_at: String,
+    pub sessions: Vec<AppUsageSessionDto>,
+    pub apps: Vec<AppUsageSummaryDto>,
+}
