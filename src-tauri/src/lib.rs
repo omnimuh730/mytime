@@ -7,6 +7,7 @@ mod input_aggregator;
 mod input_monitor;
 mod ipc;
 mod models;
+mod network_monitor;
 mod services;
 
 use app_state::AppState;
@@ -59,6 +60,7 @@ pub fn run() {
 
             app_usage_monitor::start_global_app_usage_monitor(app.handle().clone());
             input_monitor::start_global_input_monitor(app.handle().clone());
+            network_monitor::start_network_monitor();
 
             Ok(())
         })
@@ -70,7 +72,13 @@ pub fn run() {
             ipc::get_activity_app_usage,
             ipc::get_activity_heatmap,
             ipc::get_activity_timeline,
-            ipc::get_network_summary
+            ipc::get_network_summary,
+            ipc::get_network_overview,
+            ipc::get_network_connections,
+            ipc::get_process_bandwidth,
+            ipc::get_speed_history,
+            ipc::get_network_usage_history,
+            ipc::run_speed_test,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,8 +6,10 @@ use crate::{
     input_aggregator,
     models::{
         ActivityAppUsageDto, ActivityTimelineDto, AppStatusDto, DashboardSummaryDto,
-        LiveFeedEventDto, NetworkSummaryDto,
+        LiveFeedEventDto, NetConnectionDto, NetOverviewDto, NetProcessBandwidthDto,
+        NetSpeedSnapshotDto, NetUsagePointDto, NetworkSummaryDto, SpeedTestResultDto,
     },
+    network_monitor,
     services,
 };
 
@@ -61,4 +63,39 @@ pub fn get_activity_timeline(
 #[tauri::command]
 pub fn get_network_summary() -> Result<NetworkSummaryDto, String> {
     Ok(services::build_network_summary())
+}
+
+#[tauri::command]
+pub fn get_network_overview() -> Result<NetOverviewDto, String> {
+    Ok(network_monitor::get_network_overview())
+}
+
+#[tauri::command]
+pub fn get_network_connections() -> Result<Vec<NetConnectionDto>, String> {
+    Ok(network_monitor::get_network_connections())
+}
+
+#[tauri::command]
+pub fn get_process_bandwidth() -> Result<Vec<NetProcessBandwidthDto>, String> {
+    Ok(network_monitor::get_process_bandwidth())
+}
+
+#[tauri::command]
+pub fn get_speed_history() -> Result<Vec<NetSpeedSnapshotDto>, String> {
+    Ok(network_monitor::get_speed_history())
+}
+
+#[tauri::command]
+pub fn get_network_usage_history() -> Result<Vec<NetUsagePointDto>, String> {
+    Ok(network_monitor::get_network_usage_history())
+}
+
+#[tauri::command]
+pub fn run_speed_test() -> Result<SpeedTestResultDto, String> {
+    let (dl, ul, lat) = network_monitor::run_speed_test();
+    Ok(SpeedTestResultDto {
+        download_bps: dl,
+        upload_bps: ul,
+        latency_ms: lat,
+    })
 }

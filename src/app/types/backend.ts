@@ -132,3 +132,86 @@ export interface ActivityAppUsageDto {
   apps: AppUsageSummaryDto[];
   inputMinutes: AppInputMinuteDto[];
 }
+
+// ── Network monitoring DTOs ──
+
+export interface NetConnectionDto {
+  id: string;
+  process: string;
+  pid: number;
+  icon: string;
+  protocol: string;
+  localAddr: string;
+  localPort: number;
+  remoteAddr: string;
+  remotePort: number;
+  state: string;
+  downloadBytes: number;
+  uploadBytes: number;
+}
+
+export interface NetProcessBandwidthDto {
+  id: string;
+  process: string;
+  pid: number;
+  icon: string;
+  iconDataUrl: string | null;
+  downloadBytes: number;
+  uploadBytes: number;
+  totalBytes: number;
+  connectionCount: number;
+  peakBps: number;
+  processType: "foreground" | "background";
+  status: "normal" | "warning" | "danger";
+  description: string;
+}
+
+export interface NetDomainDto {
+  domain: string;
+  requestCount: number;
+  bandwidthBytes: number;
+  category: string;
+  color: string;
+  percentage: number;
+}
+
+export interface NetSpeedSnapshotDto {
+  downloadBps: number;
+  uploadBps: number;
+  latencyMs: number;
+  jitterMs: number;
+  timestamp: string;
+}
+
+export interface NetUsagePointDto {
+  label: string;
+  downloadBytes: number;
+  uploadBytes: number;
+}
+
+export interface NetStatusDto {
+  isOnline: boolean;
+  latencyMs: number;
+  uptimePercent: number;
+  avgLatencyMs: number;
+  connectionType: string;
+  dnsServer: string;
+  gateway: string;
+  localIp: string;
+}
+
+export interface SpeedTestResultDto {
+  downloadBps: number;
+  uploadBps: number;
+  latencyMs: number;
+}
+
+export interface NetOverviewDto {
+  generatedAt: string;
+  downloadBytesToday: number;
+  uploadBytesToday: number;
+  activeConnections: number;
+  uniqueRemoteAddrs: number;
+  speed: NetSpeedSnapshotDto;
+  status: NetStatusDto;
+}

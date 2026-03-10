@@ -51,6 +51,7 @@ import {
 import { useActivityAppUsage } from "./hooks/useActivityAppUsage";
 import { useDashboardSummary } from "./hooks/useDashboardSummary";
 import { useAppStatus } from "./hooks/useAppStatus";
+import { useNetworkOverview, useProcessBandwidth, useNetworkConnections, useSpeedHistory } from "./hooks/useNetworkData";
 import type { DashboardSummaryDto } from "./types/backend";
 
 const PAGE_CONFIG: Record<string, { title: string; subtitle: string; icon: typeof LayoutDashboard; accentColor: string }> = {
@@ -437,207 +438,93 @@ function ActivityView({
 }
 
 function NetworkView() {
+  const { overview } = useNetworkOverview();
+  const { processes } = useProcessBandwidth();
+  const { connections } = useNetworkConnections();
+  const { history: speedHistory } = useSpeedHistory();
+
+  const dlStr = overview ? fmtBytes(overview.downloadBytesToday) : "—";
+  const ulStr = overview ? fmtBytes(overview.uploadBytesToday) : "—";
+  const conns = overview?.activeConnections ?? 0;
+  const remotes = overview?.uniqueRemoteAddrs ?? 0;
+  const dlSpeed = overview ? fmtMbps(overview.speed.downloadBps) : "—";
+  const ulSpeed = overview ? fmtMbps(overview.speed.uploadBps) : "—";
+  const latency = overview?.speed.latencyMs ?? 0;
+  const jitter = overview?.speed.jitterMs ?? 0;
+
   return (
     <div className="space-y-4 sm:space-y-6">
       {/* ── Overview Stats ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        <StatCard
-          title="Download Today"
-          value="18.4 GB"
-          change="+28%"
-          trend="up"
-          icon={<Download className="w-5 h-5" />}
-          color="bg-chart-3/10 text-chart-3"
-        />
-        <StatCard
-          title="Upload Today"
-          value="7.7 GB"
-          change="+15%"
-          trend="up"
-          icon={<Upload className="w-5 h-5" />}
-          color="bg-chart-4/10 text-chart-4"
-        />
-        <StatCard
-          title="Active Connections"
-          value="147"
-          change="+12"
-          trend="up"
-          icon={<Wifi className="w-5 h-5" />}
-          color="bg-chart-2/10 text-chart-2"
-        />
-        <StatCard
-          title="Unique Domains"
-          value="89"
-          change="+7"
-          trend="up"
-          icon={<Globe className="w-5 h-5" />}
-          color="bg-primary/10 text-primary"
-        />
+        <StatCard title="Download Today" value={dlStr} icon={<Download className="w-5 h-5" />} color="bg-chart-3/10 text-chart-3" />
+        <StatCard title="Upload Today" value={ulStr} icon={<Upload className="w-5 h-5" />} color="bg-chart-4/10 text-chart-4" />
+        <StatCard title="Active Connections" value={String(conns)} icon={<Wifi className="w-5 h-5" />} color="bg-chart-2/10 text-chart-2" />
+        <StatCard title="Unique Remote IPs" value={String(remotes)} icon={<Globe className="w-5 h-5" />} color="bg-primary/10 text-primary" />
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        <StatCard
-          title="Download Speed"
-          value="342.8 Mbps"
-          change="+5%"
-          trend="up"
-          icon={<Gauge className="w-5 h-5" />}
-          color="bg-chart-5/10 text-chart-5"
-        />
-        <StatCard
-          title="Upload Speed"
-          value="98.4 Mbps"
-          change="+2%"
-          trend="up"
-          icon={<Gauge className="w-5 h-5" />}
-          color="bg-chart-2/10 text-chart-2"
-        />
-        <StatCard
-          title="Avg Latency"
-          value="45ms"
-          change="-8%"
-          trend="down"
-          icon={<Activity className="w-5 h-5" />}
-          color="bg-chart-3/10 text-chart-3"
-          subtitle="across all regions"
-        />
-        <StatCard
-          title="Packet Loss"
-          value="0.02%"
-          change="-12%"
-          trend="down"
-          icon={<ShieldAlert className="w-5 h-5" />}
-          color="bg-chart-4/10 text-chart-4"
-          subtitle="last 24 hours"
-        />
+        <StatCard title="Download Speed" value={dlSpeed} icon={<Gauge className="w-5 h-5" />} color="bg-chart-5/10 text-chart-5" />
+        <StatCard title="Upload Speed" value={ulSpeed} icon={<Gauge className="w-5 h-5" />} color="bg-chart-2/10 text-chart-2" />
+        <StatCard title="Latency" value={`${latency}ms`} icon={<Activity className="w-5 h-5" />} color="bg-chart-3/10 text-chart-3" subtitle="to 8.8.8.8" />
+        <StatCard title="Jitter" value={`${jitter.toFixed(1)}ms`} icon={<ShieldAlert className="w-5 h-5" />} color="bg-chart-4/10 text-chart-4" />
       </div>
 
-      {/* ── Section: Traffic & Usage ── */}
-      <SectionHeader
-        icon={<ArrowDownUp className="w-4 h-4" />}
-        title="Traffic & Usage"
-        subtitle="Real-time and historical bandwidth overview"
-      />
+      <SectionHeader icon={<ArrowDownUp className="w-4 h-4" />} title="Traffic & Usage" subtitle="Real-time and historical bandwidth overview" />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-        <NetworkUsageChart />
-        <NetworkStatus />
+        <NetworkUsageChart downloadBytes={overview?.downloadBytesToday ?? 0} uploadBytes={overview?.uploadBytesToday ?? 0} />
+        <NetworkStatus overview={overview} />
       </div>
 
-      {/* ── Section: Data Velocity & Quota ── */}
-      <SectionHeader
-        icon={<Calendar className="w-4 h-4" />}
-        title="Data Velocity & Quota"
-        subtitle="Daily volume heatmap and monthly budget tracking"
-      />
+      <SectionHeader icon={<Calendar className="w-4 h-4" />} title="Data Velocity & Quota" subtitle="Daily volume heatmap and monthly budget tracking" />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-        <DataVelocityHeatmap />
-        <NetworkQuotaBurndown />
+        <DataVelocityHeatmap downloadBytesToday={overview?.downloadBytesToday ?? 0} uploadBytesToday={overview?.uploadBytesToday ?? 0} />
+        <NetworkQuotaBurndown downloadBytesToday={overview?.downloadBytesToday ?? 0} uploadBytesToday={overview?.uploadBytesToday ?? 0} />
       </div>
 
-      {/* ── Section: Bandwidth Analysis ── */}
-      <SectionHeader
-        icon={<ShieldAlert className="w-4 h-4" />}
-        title="Bandwidth Analysis"
-        subtitle="Foreground vs. background process traffic split"
-      />
-      <BandwidthSplitter />
+      <SectionHeader icon={<ShieldAlert className="w-4 h-4" />} title="Bandwidth Analysis" subtitle="Foreground vs. background process traffic split" />
+      <BandwidthSplitter processes={processes} />
 
-      {/* ── Side-by-side: Domain Analytics + Speed & Performance ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 items-stretch">
-        {/* Left: Domain Analytics */}
         <div className="flex flex-col gap-3 sm:gap-4">
-          <SectionHeader
-            icon={<Globe className="w-4 h-4" />}
-            title="Domain Analytics"
-            subtitle="Top domains, request counts, and blocked entries"
-          />
+          <SectionHeader icon={<Globe className="w-4 h-4" />} title="Domain Analytics" subtitle="Top remote addresses and request counts" />
           <div className="grid grid-cols-2 gap-3 sm:gap-4">
-            <StatCard
-              title="Total Domains"
-              value="89"
-              change="+7"
-              trend="up"
-              icon={<Globe className="w-5 h-5" />}
-              color="bg-primary/10 text-primary"
-            />
-            <StatCard
-              title="Total Requests"
-              value="10.5K"
-              change="+22%"
-              trend="up"
-              icon={<ArrowDownUp className="w-5 h-5" />}
-              color="bg-chart-2/10 text-chart-2"
-            />
-            <StatCard
-              title="Domain Bandwidth"
-              value="4.1 GB"
-              change="+18%"
-              trend="up"
-              icon={<Download className="w-5 h-5" />}
-              color="bg-chart-3/10 text-chart-3"
-            />
-            <StatCard
-              title="Blocked Domains"
-              value="12"
-              change="-3"
-              trend="down"
-              icon={<ShieldAlert className="w-5 h-5" />}
-              color="bg-destructive/10 text-destructive"
-            />
+            <StatCard title="Remote IPs" value={String(remotes)} icon={<Globe className="w-5 h-5" />} color="bg-primary/10 text-primary" />
+            <StatCard title="Connections" value={String(conns)} icon={<ArrowDownUp className="w-5 h-5" />} color="bg-chart-2/10 text-chart-2" />
+            <StatCard title="Total Traffic" value={fmtBytes((overview?.downloadBytesToday ?? 0) + (overview?.uploadBytesToday ?? 0))} icon={<Download className="w-5 h-5" />} color="bg-chart-3/10 text-chart-3" />
+            <StatCard title="Processes" value={String(processes.length)} icon={<ShieldAlert className="w-5 h-5" />} color="bg-chart-4/10 text-chart-4" />
           </div>
           <div className="flex-1 min-h-0 [&>div]:h-full">
-            <DomainTracker />
+            <DomainTracker connections={connections} />
           </div>
         </div>
 
-        {/* Right: Speed & Performance */}
         <div className="flex flex-col gap-3 sm:gap-4">
-          <SectionHeader
-            icon={<Gauge className="w-4 h-4" />}
-            title="Speed & Performance"
-            subtitle="Connection speed tests, ping, and jitter analysis"
-          />
+          <SectionHeader icon={<Gauge className="w-4 h-4" />} title="Speed & Performance" subtitle="Connection speed monitoring, ping, and jitter analysis" />
           <div className="grid grid-cols-2 gap-3 sm:gap-4">
-            <StatCard
-              title="Download Speed"
-              value="342.8 Mbps"
-              change="+5%"
-              trend="up"
-              icon={<Download className="w-5 h-5" />}
-              color="bg-primary/10 text-primary"
-            />
-            <StatCard
-              title="Upload Speed"
-              value="98.4 Mbps"
-              change="+2%"
-              trend="up"
-              icon={<Upload className="w-5 h-5" />}
-              color="bg-chart-2/10 text-chart-2"
-            />
-            <StatCard
-              title="Ping"
-              value="12ms"
-              change="-15%"
-              trend="down"
-              icon={<Activity className="w-5 h-5" />}
-              color="bg-chart-4/10 text-chart-4"
-            />
-            <StatCard
-              title="Jitter"
-              value="2.1ms"
-              change="-8%"
-              trend="down"
-              icon={<Wifi className="w-5 h-5" />}
-              color="bg-chart-3/10 text-chart-3"
-            />
+            <StatCard title="Download Speed" value={dlSpeed} icon={<Download className="w-5 h-5" />} color="bg-primary/10 text-primary" />
+            <StatCard title="Upload Speed" value={ulSpeed} icon={<Upload className="w-5 h-5" />} color="bg-chart-2/10 text-chart-2" />
+            <StatCard title="Ping" value={`${latency}ms`} icon={<Activity className="w-5 h-5" />} color="bg-chart-4/10 text-chart-4" />
+            <StatCard title="Jitter" value={`${jitter.toFixed(1)}ms`} icon={<Wifi className="w-5 h-5" />} color="bg-chart-3/10 text-chart-3" />
           </div>
           <div className="flex-1 min-h-0 [&>div]:h-full">
-            <SpeedGauge />
+            <SpeedGauge speedHistory={speedHistory} currentDownloadBps={overview?.speed.downloadBps ?? 0} currentUploadBps={overview?.speed.uploadBps ?? 0} />
           </div>
         </div>
       </div>
-      <LivePacketMatrix />
+      <LivePacketMatrix connections={connections} />
     </div>
   );
+}
+
+function fmtBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+function fmtMbps(bps: number): string {
+  return `${(bps / 1_000_000).toFixed(1)} Mbps`;
 }
 
 function SectionHeader({

@@ -1,67 +1,31 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
-  BarChart,
-  Bar,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { PremiumDateRangePicker } from "./ui/PremiumDateRangePicker";
 
-// Generate deterministic mock network data for any date range
-function generateNetworkData(startDate: string, endDate: string) {
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  const dayCount = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-  const data: { time: string; download: number; upload: number }[] = [];
+interface Props {
+  downloadBytes?: number;
+  uploadBytes?: number;
+}
 
-  if (dayCount <= 14) {
-    // Daily bars
-    for (let d = 0; d < dayCount; d++) {
-      const date = new Date(start);
-      date.setDate(date.getDate() + d);
-      const seed = (date.getDate() * 23 + date.getMonth() * 17 + date.getFullYear() * 3) % 100;
-      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-      const mult = isWeekend ? 1.3 : 0.85;
-      data.push({
-        time: dayCount <= 7
-          ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][date.getDay()]
-          : `${date.getMonth() + 1}/${date.getDate()}`,
-        download: Math.round((seed * 0.05 + 1.5) * mult * 10) / 10,
-        upload: Math.round((seed * 0.02 + 0.5) * mult * 10) / 10,
-      });
-    }
-  } else if (dayCount <= 60) {
-    // Weekly aggregates
-    const weeks = Math.ceil(dayCount / 7);
-    for (let w = 0; w < weeks; w++) {
-      const date = new Date(start);
-      date.setDate(date.getDate() + w * 7);
-      const seed = (date.getDate() * 19 + w * 37 + date.getMonth() * 11) % 100;
-      data.push({
-        time: `W${w + 1}`,
-        download: Math.round((seed * 0.15 + 10) * 10) / 10,
-        upload: Math.round((seed * 0.06 + 3) * 10) / 10,
-      });
-    }
-  } else {
-    // Monthly aggregates
-    const months = Math.ceil(dayCount / 30);
-    for (let m = 0; m < months; m++) {
-      const date = new Date(start);
-      date.setMonth(date.getMonth() + m);
-      const seed = (date.getMonth() * 29 + m * 41 + date.getFullYear() * 3) % 100;
-      const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      data.push({
-        time: monthNames[date.getMonth()],
-        download: Math.round((seed * 0.5 + 30) * 10) / 10,
-        upload: Math.round((seed * 0.2 + 10) * 10) / 10,
-      });
-    }
-  }
-  return data;
+interface DataPoint {
+  time: string;
+  download: number;
+  upload: number;
+}
+
+function bytesToGB(b: number): number {
+  return Math.round((b / (1024 * 1024 * 1024)) * 100) / 100;
+}
+
+function bytesToMB(b: number): number {
+  return Math.round((b / (1024 * 1024)) * 100) / 100;
 }
 
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -71,14 +35,9 @@ const CustomTooltip = ({ active, payload, label }: any) => {
         <p className="text-xs text-muted-foreground mb-2">{label}</p>
         {payload.map((entry: any, index: number) => (
           <div key={index} className="flex items-center gap-2 text-sm">
-            <div
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: entry.color }}
-            />
-            <span className="text-muted-foreground capitalize">
-              {entry.dataKey}:
-            </span>
-            <span className="text-foreground">{entry.value} GB</span>
+            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
+            <span className="text-muted-foreground capitalize">{entry.dataKey}:</span>
+            <span className="text-foreground">{entry.value} MB</span>
           </div>
         ))}
       </div>
@@ -87,22 +46,34 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   return null;
 };
 
-const TODAY = "2026-03-09";
-const WEEK_AGO = "2026-03-03";
+export function NetworkUsageChart({ downloadBytes = 0, uploadBytes = 0 }: Props) {
+  const [history, setHistory] = useState<DataPoint[]>([]);
+  const lastBytesRef = useRef({ dl: 0, ul: 0 });
 
-export function NetworkUsageChart() {
-  const [startDate, setStartDate] = useState(WEEK_AGO);
-  const [endDate, setEndDate] = useState(TODAY);
+  useEffect(() => {
+    const now = new Date();
+    const label = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}:${now.getSeconds().toString().padStart(2, "0")}`;
 
-  const handleStartChange = useCallback((val: string) => {
-    setStartDate(val);
-  }, []);
+    const dlDelta = downloadBytes > lastBytesRef.current.dl
+      ? downloadBytes - lastBytesRef.current.dl
+      : downloadBytes;
+    const ulDelta = uploadBytes > lastBytesRef.current.ul
+      ? uploadBytes - lastBytesRef.current.ul
+      : uploadBytes;
 
-  const handleEndChange = useCallback((val: string) => {
-    setEndDate(val);
-  }, []);
+    lastBytesRef.current = { dl: downloadBytes, ul: uploadBytes };
 
-  const data = useMemo(() => generateNetworkData(startDate, endDate), [startDate, endDate]);
+    if (dlDelta > 0 || ulDelta > 0) {
+      setHistory((prev) => {
+        const next = [...prev, {
+          time: label,
+          download: bytesToMB(dlDelta),
+          upload: bytesToMB(ulDelta),
+        }];
+        return next.slice(-30);
+      });
+    }
+  }, [downloadBytes, uploadBytes]);
 
   return (
     <div className="bg-card rounded-2xl border border-border p-4 sm:p-6">
@@ -110,7 +81,7 @@ export function NetworkUsageChart() {
         <div>
           <h3 className="text-foreground">Network Usage</h3>
           <p className="text-muted-foreground text-xs mt-1">
-            Download & upload traffic over selected range
+            Live download & upload traffic deltas
           </p>
         </div>
         <div className="flex items-center gap-4">
@@ -125,57 +96,38 @@ export function NetworkUsageChart() {
         </div>
       </div>
 
-      {/* Date Range Picker */}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 mb-4">
-        <PremiumDateRangePicker
-          startDate={startDate}
-          endDate={endDate}
-          onStartChange={handleStartChange}
-          onEndChange={handleEndChange}
-        />
+      <div className="flex items-center gap-4 mb-4 text-xs text-muted-foreground">
+        <span>Total DL: <span className="text-foreground">{bytesToGB(downloadBytes)} GB</span></span>
+        <span>Total UL: <span className="text-foreground">{bytesToGB(uploadBytes)} GB</span></span>
       </div>
 
       <div className="h-[200px] sm:h-[240px]">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} barGap={4}>
-            <CartesianGrid
-              key="grid"
-              strokeDasharray="3 3"
-              stroke="var(--grid-stroke)"
-              vertical={false}
-            />
-            <XAxis
-              key="xaxis"
-              dataKey="time"
-              axisLine={false}
-              tickLine={false}
-              tick={{ fill: "var(--axis-tick)", fontSize: 11 }}
-              interval="preserveStartEnd"
-            />
-            <YAxis
-              key="yaxis"
-              axisLine={false}
-              tickLine={false}
-              tick={{ fill: "var(--axis-tick)", fontSize: 11 }}
-              unit=" GB"
-            />
-            <Tooltip content={<CustomTooltip />} key="tooltip" />
-            <Bar
-              key="bar-download"
-              dataKey="download"
-              fill="#a78bfa"
-              radius={[6, 6, 0, 0]}
-              maxBarSize={32}
-            />
-            <Bar
-              key="bar-upload"
-              dataKey="upload"
-              fill="#34d399"
-              radius={[6, 6, 0, 0]}
-              maxBarSize={32}
-            />
-          </BarChart>
-        </ResponsiveContainer>
+        {history.length === 0 ? (
+          <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
+            Collecting data...
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={history}>
+              <defs>
+                <linearGradient id="dlGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.3} />
+                  <stop offset="100%" stopColor="#a78bfa" stopOpacity={0.02} />
+                </linearGradient>
+                <linearGradient id="ulGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#34d399" stopOpacity={0.25} />
+                  <stop offset="100%" stopColor="#34d399" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--grid-stroke)" vertical={false} />
+              <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "var(--axis-tick)", fontSize: 10 }} interval="preserveStartEnd" />
+              <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--axis-tick)", fontSize: 11 }} unit=" MB" />
+              <Tooltip content={<CustomTooltip />} />
+              <Area type="monotone" dataKey="download" stroke="#a78bfa" strokeWidth={2} fill="url(#dlGradient)" dot={false} activeDot={{ r: 4, fill: "#a78bfa", stroke: "#a78bfa" }} />
+              <Area type="monotone" dataKey="upload" stroke="#34d399" strokeWidth={2} fill="url(#ulGradient)" dot={false} activeDot={{ r: 4, fill: "#34d399", stroke: "#34d399" }} />
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
       </div>
     </div>
   );

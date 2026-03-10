@@ -8,6 +8,7 @@ use crate::{
         AppStatusDto, DashboardMetricsDto, DashboardSummaryDto, InputStatsDto, MetricCardDto,
         MetricTrendDto, NetworkSummaryDto,
     },
+    network_monitor,
 };
 
 fn format_count(value: usize) -> String {
@@ -55,9 +56,9 @@ pub fn build_app_status(state: &AppState) -> AppStatusDto {
         log_dir: paths.log_dir.display().to_string(),
         db_path: paths.db_path.display().to_string(),
         db_exists: paths.db_path.exists(),
-        ip_address: "192.168.1.42".to_string(),
-        online: true,
-        latency_ms: 12,
+        ip_address: network_monitor::get_local_ip(),
+        online: network_monitor::get_network_overview().status.is_online,
+        latency_ms: network_monitor::get_network_overview().status.latency_ms,
     }
 }
 
@@ -128,51 +129,35 @@ pub fn build_dashboard_summary(stats: Option<InputStatsDto>) -> DashboardSummary
             active_time_today: active_time,
             mouse_events,
             keystrokes,
-            network_traffic: metric(
-                "Network Traffic",
-                format!("{:.1} GB", 24.8 + seed as f32 * 0.4),
-                Some("+24%"),
-                Some(MetricTrendDto::Up),
-                Some("download + upload"),
-            ),
+            network_traffic: {
+                let overview = network_monitor::get_network_overview();
+                let total_bytes = overview.download_bytes_today + overview.upload_bytes_today;
+                let gb = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                metric(
+                    "Network Traffic",
+                    if gb >= 1.0 { format!("{:.1} GB", gb) } else { format!("{:.1} MB", gb * 1024.0) },
+                    None,
+                    None,
+                    Some("download + upload"),
+                )
+            },
         },
     }
 }
 
 pub fn build_network_summary() -> NetworkSummaryDto {
-    let today = Local::now().date_naive();
-    let seed = today.ordinal() % 9;
+    let overview = network_monitor::get_network_overview();
+    let fmt_bytes = |b: u64| -> String {
+        let gb = b as f64 / (1024.0 * 1024.0 * 1024.0);
+        if gb >= 1.0 { format!("{:.1} GB", gb) } else { format!("{:.1} MB", gb * 1024.0) }
+    };
 
     NetworkSummaryDto {
-        generated_at: Utc::now().to_rfc3339(),
-        download_today: metric(
-            "Download Today",
-            format!("{:.1} GB", 18.0 + seed as f32 * 0.3),
-            Some("+28%"),
-            Some(MetricTrendDto::Up),
-            None,
-        ),
-        upload_today: metric(
-            "Upload Today",
-            format!("{:.1} GB", 7.1 + seed as f32 * 0.2),
-            Some("+15%"),
-            Some(MetricTrendDto::Up),
-            None,
-        ),
-        active_connections: metric(
-            "Active Connections",
-            format!("{}", 132 + seed * 3),
-            Some("+12"),
-            Some(MetricTrendDto::Up),
-            None,
-        ),
-        unique_domains: metric(
-            "Unique Domains",
-            format!("{}", 81 + seed),
-            Some("+7"),
-            Some(MetricTrendDto::Up),
-            None,
-        ),
+        generated_at: overview.generated_at,
+        download_today: metric("Download Today", fmt_bytes(overview.download_bytes_today), None, None, None),
+        upload_today: metric("Upload Today", fmt_bytes(overview.upload_bytes_today), None, None, None),
+        active_connections: metric("Active Connections", format!("{}", overview.active_connections), None, None, None),
+        unique_domains: metric("Unique Remote IPs", format!("{}", overview.unique_remote_addrs), None, None, None),
     }
 }
 

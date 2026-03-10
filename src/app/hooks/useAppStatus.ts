@@ -25,7 +25,7 @@ export function useAppStatus() {
 
     const interval = window.setInterval(() => {
       void refresh();
-    }, 30_000);
+    }, 3_000);
 
     return () => window.clearInterval(interval);
   }, [refresh]);

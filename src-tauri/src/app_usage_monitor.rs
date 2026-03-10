@@ -427,6 +427,39 @@ pub fn start_global_app_usage_monitor<R: Runtime>(_app: AppHandle<R>) {
     info!("started global app usage monitor");
 }
 
+#[allow(dead_code)]
+#[cfg(windows)]
+pub fn process_name_for_pid(pid: u32) -> Option<String> {
+    let info = windows_impl::read_process_info_public(pid);
+    info.map(|(name, _path)| name)
+}
+
+#[cfg(windows)]
+pub fn process_info_for_pid(pid: u32) -> Option<(String, String)> {
+    windows_impl::read_process_info_public(pid)
+}
+
+#[cfg(windows)]
+pub fn icon_for_exe_path(path: &str) -> Option<String> {
+    get_cached_icon_data_url(path)
+}
+
+#[allow(dead_code)]
+#[cfg(not(windows))]
+pub fn process_name_for_pid(_pid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn process_info_for_pid(_pid: u32) -> Option<(String, String)> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn icon_for_exe_path(_path: &str) -> Option<String> {
+    None
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::{sanitize_app_id, WindowSnapshot};
@@ -466,6 +499,10 @@ mod windows_impl {
     }
 
     fn read_process_info(pid: u32) -> Option<(String, String)> {
+        read_process_info_public(pid)
+    }
+
+    pub fn read_process_info_public(pid: u32) -> Option<(String, String)> {
         let process =
             unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()? };
         let mut buffer = vec![0u16; 260];

@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,4 +160,125 @@ pub struct ActivityAppUsageDto {
     pub sessions: Vec<AppUsageSessionDto>,
     pub apps: Vec<AppUsageSummaryDto>,
     pub input_minutes: Vec<AppInputMinuteDto>,
+}
+
+// ── Network monitoring DTOs ──
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetConnectionDto {
+    pub id: String,
+    pub process: String,
+    pub pid: u32,
+    pub icon: String,
+    pub protocol: String,
+    pub local_addr: String,
+    pub local_port: u16,
+    pub remote_addr: String,
+    pub remote_port: u16,
+    pub state: String,
+    pub download_bytes: u64,
+    pub upload_bytes: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetProcessBandwidthDto {
+    pub id: String,
+    pub process: String,
+    pub pid: u32,
+    pub icon: String,
+    pub icon_data_url: Option<String>,
+    pub download_bytes: u64,
+    pub upload_bytes: u64,
+    pub total_bytes: u64,
+    pub connection_count: u32,
+    pub peak_bps: f64,
+    pub process_type: String,
+    pub status: String,
+    pub description: String,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetDomainDto {
+    pub domain: String,
+    pub request_count: u32,
+    pub bandwidth_bytes: u64,
+    pub category: String,
+    pub color: String,
+    pub percentage: f32,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetSpeedSnapshotDto {
+    pub download_bps: f64,
+    pub upload_bps: f64,
+    pub latency_ms: u32,
+    pub jitter_ms: f64,
+    pub timestamp: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetUsagePointDto {
+    pub label: String,
+    pub download_bytes: u64,
+    pub upload_bytes: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetDayVelocityDto {
+    pub date: String,
+    pub day: u32,
+    pub month: u32,
+    pub year: i32,
+    pub dow: u32,
+    pub download_bytes: u64,
+    pub upload_bytes: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetStatusDto {
+    pub is_online: bool,
+    pub latency_ms: u32,
+    pub uptime_percent: f64,
+    pub avg_latency_ms: u32,
+    pub connection_type: String,
+    pub dns_server: String,
+    pub gateway: String,
+    pub local_ip: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetOverviewDto {
+    pub generated_at: String,
+    pub download_bytes_today: u64,
+    pub upload_bytes_today: u64,
+    pub active_connections: u32,
+    pub unique_remote_addrs: u32,
+    pub speed: NetSpeedSnapshotDto,
+    pub status: NetStatusDto,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetQuotaConfigDto {
+    pub quota_gb: f64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedTestResultDto {
+    pub download_bps: f64,
+    pub upload_bps: f64,
+    pub latency_ms: u32,
 }
