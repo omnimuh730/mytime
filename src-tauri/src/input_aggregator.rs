@@ -118,6 +118,18 @@ fn feed_description(event: &InputMonitorEventDto) -> String {
 
 /// Record an event from the global hook (called from the input_monitor emitter thread on Windows).
 pub fn record(event: &InputMonitorEventDto) {
+    crate::db::queue_input_event(
+        event.timestamp,
+        event.kind,
+        event.action,
+        &event.label,
+        event.state_key.as_deref(),
+        event.button,
+        event.direction,
+        event.x,
+        event.y,
+    );
+
     let Some(mutex) = AGGREGATOR.get() else { return };
     let Ok(mut inner) = mutex.lock() else { return };
 
@@ -203,13 +215,20 @@ fn detail_string(e: &InputMonitorEventDto) -> String {
 /// Initialize the aggregator (call once when starting the global input monitor).
 pub fn init() {
     let today = Local::now().date_naive();
+    let (first_ts, last_ts) = {
+        let date = today.format("%Y-%m-%d").to_string();
+        let events = crate::db::load_input_events_for_date(&date, 10000);
+        let first = events.iter().map(|e| e.0).min();
+        let last = events.iter().map(|e| e.0).max();
+        (first, last)
+    };
     let _ = AGGREGATOR.set(Mutex::new(Inner {
         date_today: today,
         key_presses: 0,
         mouse_events: 0,
         scroll_events: 0,
-        first_activity_ts_ms: None,
-        last_activity_ts_ms: None,
+        first_activity_ts_ms: first_ts,
+        last_activity_ts_ms: last_ts,
         recent: VecDeque::new(),
         last_sequence: None,
     }));

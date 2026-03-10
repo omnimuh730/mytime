@@ -708,11 +708,19 @@ fn poll_connections(_state: &mut NetState) {}
 
 
 pub fn start_network_monitor() {
-    let _ = STATE.set(Mutex::new(NetState::new()));
+    let mut net_state = NetState::new();
+    if let Some((dl, ul, _, _, _, _, _)) = crate::db::load_latest_network_sample_for_date(
+        &Local::now().date_naive().format("%Y-%m-%d").to_string(),
+    ) {
+        net_state.download_bytes_today = dl;
+        net_state.upload_bytes_today = ul;
+    }
+    let _ = STATE.set(Mutex::new(net_state));
 
     std::thread::spawn(|| {
         info!("network_monitor: polling thread started");
         let mut detect_counter: u32 = 0;
+        let mut persist_counter: u32 = 0;
         loop {
             // Detect system network info outside the lock (PowerShell is slow)
             let detect_info = if detect_counter == 0 {
@@ -733,9 +741,37 @@ pub fn start_network_monitor() {
                         state.cached_conn_type = ct;
                     }
                     poll_connections(&mut state);
+
+                    if persist_counter == 0 {
+                        let date = state.today_date.format("%Y-%m-%d").to_string();
+                        let ts_ms = chrono::Utc::now().timestamp_millis();
+                        let dl = state.download_bytes_today;
+                        let ul = state.upload_bytes_today;
+                        let conns = state.connections.len() as u32;
+                        let dl_bps = state.current_download_bps;
+                        let ul_bps = state.current_upload_bps;
+                        let lat = state.latency_ms;
+                        let online = state.is_online;
+                        drop(state);
+                        let _ = crate::db::with_atomic_tx(|tx| {
+                            crate::db::insert_network_sample(
+                                tx,
+                                &date,
+                                ts_ms,
+                                dl,
+                                ul,
+                                conns,
+                                dl_bps,
+                                ul_bps,
+                                lat,
+                                online,
+                            )
+                        });
+                    }
                 }
             }
             detect_counter = (detect_counter + 1) % 30;
+            persist_counter = (persist_counter + 1) % 30;
             std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
         }
     });

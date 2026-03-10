@@ -11,6 +11,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::{
+    db,
     input_monitor::InputMonitorEventDto,
     models::{ActivityAppUsageDto, AppInputMinuteDto, AppUsageSessionDto, AppUsageSummaryDto},
 };
@@ -18,6 +19,8 @@ use crate::{
 const MAX_STORED_SESSIONS: usize = 512;
 const MOVE_SEQUENCE_GAP_MS: i64 = 650;
 const SCROLL_SEQUENCE_GAP_MS: i64 = 450;
+/// Inactivity interval: activity extends 30s past last input. Inactivity starts at last_activity + 30s.
+pub const INACTIVITY_INTERVAL_MS: i64 = 30_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SequenceKind {
@@ -75,15 +78,80 @@ static ICON_CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::
 
 fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| {
-        Mutex::new(State {
+        let mut s = State {
             date_today: Local::now().date_naive(),
             next_id: 1,
             current: None,
             finished: VecDeque::new(),
             input_minutes: BTreeMap::new(),
             last_sequence: None,
-        })
+        };
+        load_from_db(&mut s);
+        Mutex::new(s)
     })
+}
+
+/// Load persisted sessions and input minutes from DB into state.
+fn persist_session(record: &SessionRecord, date: &str) {
+    let _ = db::with_atomic_tx(|tx| {
+        db::upsert_activity_session(
+            tx,
+            record.id,
+            date,
+            &record.snapshot.app_id,
+            &record.snapshot.app_name,
+            &record.snapshot.title,
+            record.snapshot.pid,
+            record.started_at_ms,
+            record.ended_at_ms,
+            record.key_presses,
+            record.mouse_clicks,
+            record.scroll_events,
+            record.snapshot.icon_data_url.as_deref(),
+        )
+    });
+}
+
+fn load_from_db(state: &mut State) {
+    let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let sessions = db::load_activity_sessions_for_date(&today);
+    let mut max_id = 0u64;
+    for (id, app_id, app_name, title, pid, started_at_ms, ended_at_ms, kp, mc, se, icon) in
+        sessions
+    {
+        max_id = max_id.max(id);
+        let snapshot = WindowSnapshot {
+            pid,
+            app_name,
+            title,
+            app_id,
+            icon_data_url: icon,
+        };
+        state.finished.push_front(SessionRecord {
+            id,
+            snapshot,
+            started_at_ms,
+            ended_at_ms,
+            key_presses: kp,
+            mouse_clicks: mc,
+            scroll_events: se,
+        });
+    }
+    if max_id > 0 {
+        state.next_id = max_id + 1;
+    }
+    while state.finished.len() > MAX_STORED_SESSIONS {
+        state.finished.pop_back();
+    }
+
+    let minutes = db::load_input_minutes_for_date(&today);
+    for (min, kp, mc, mm, se) in minutes {
+        let e = state.input_minutes.entry(min).or_default();
+        e.key_presses = kp;
+        e.mouse_clicks = mc;
+        e.mouse_moves = mm;
+        e.scroll_events = se;
+    }
 }
 
 fn sanitize_app_id(name: &str) -> String {
@@ -139,6 +207,12 @@ fn minute_of_day(ts_ms: i64) -> Option<u32> {
     })
 }
 
+/// Returns the minute that contains (ts_ms + INACTIVITY_INTERVAL_MS).
+/// Used to extend "active" into the 30s window after last activity.
+fn extended_minute_of_day(ts_ms: i64) -> Option<u32> {
+    minute_of_day(ts_ms.saturating_add(INACTIVITY_INTERVAL_MS))
+}
+
 fn event_sequence_kind(event: &InputMonitorEventDto) -> SequenceKind {
     match (event.kind, event.action) {
         ("mouse", "move") => SequenceKind::MouseMove,
@@ -177,6 +251,7 @@ fn ensure_today(state: &mut State) {
 }
 
 fn transition_snapshot(state: &mut State, now: i64, snapshot: Option<WindowSnapshot>) {
+    let date = state.date_today.format("%Y-%m-%d").to_string();
     match (state.current.clone(), snapshot) {
         (Some(mut current), Some(next)) if same_window(&current.snapshot, &next) => {
             current.ended_at_ms = now;
@@ -184,6 +259,7 @@ fn transition_snapshot(state: &mut State, now: i64, snapshot: Option<WindowSnaps
         }
         (Some(mut current), Some(next)) => {
             current.ended_at_ms = now;
+            persist_session(&current, &date);
             state.finished.push_front(current);
             while state.finished.len() > MAX_STORED_SESSIONS {
                 state.finished.pop_back();
@@ -202,6 +278,7 @@ fn transition_snapshot(state: &mut State, now: i64, snapshot: Option<WindowSnaps
         }
         (Some(mut current), None) => {
             current.ended_at_ms = now;
+            persist_session(&current, &date);
             state.finished.push_front(current);
             while state.finished.len() > MAX_STORED_SESSIONS {
                 state.finished.pop_back();
@@ -312,6 +389,15 @@ pub fn record_input_event(event: &InputMonitorEventDto) {
         }
         _ => {}
     }
+
+    // Extend "active" 30s past last activity: inactivity starts at last_activity + 30s.
+    if let (Some(minute), Some(ext)) = (minute, extended_minute_of_day(now)) {
+        if ext != minute && is_today(now.saturating_add(INACTIVITY_INTERVAL_MS)) {
+            let bucket = state.input_minutes.entry(ext).or_default();
+            bucket.mouse_moves = bucket.mouse_moves.saturating_add(1);
+        }
+    }
+
     state.last_sequence = Some(SequenceState {
         kind: event_sequence_kind(event),
         timestamp_ms: now,
@@ -424,7 +510,76 @@ pub fn start_global_app_usage_monitor<R: Runtime>(_app: AppHandle<R>) {
         thread::sleep(Duration::from_millis(1000));
     });
 
+    thread::spawn(|| {
+        let mut tick = 0u32;
+        loop {
+            thread::sleep(Duration::from_secs(5));
+            tick += 1;
+            persist_checkpoint();
+        }
+    });
+
     info!("started global app usage monitor");
+}
+
+#[cfg(not(windows))]
+fn persist_checkpoint() {}
+
+#[cfg(windows)]
+fn persist_checkpoint() {
+        let (current_opt, input_minutes_vec, date) = {
+        let Ok(state) = state().lock() else { return };
+        let date = state.date_today.format("%Y-%m-%d").to_string();
+        let current = state.current.as_ref().map(|c| {
+            (
+                c.id,
+                c.snapshot.app_id.clone(),
+                c.snapshot.app_name.clone(),
+                c.snapshot.title.clone(),
+                c.snapshot.pid,
+                c.started_at_ms,
+                c.ended_at_ms,
+                c.key_presses,
+                c.mouse_clicks,
+                c.scroll_events,
+                c.snapshot.icon_data_url.clone(),
+            )
+        });
+        let minutes: Vec<_> = state
+            .input_minutes
+            .iter()
+            .map(|(m, r)| (*m, r.key_presses, r.mouse_clicks, r.mouse_moves, r.scroll_events))
+            .collect();
+        (current, minutes, date)
+    };
+
+    let _ = db::with_atomic_tx(|tx| {
+        if let Some((id, app_id, app_name, title, pid, started, ended, kp, mc, se, icon)) =
+            current_opt
+        {
+            db::upsert_activity_session(
+                tx,
+                id,
+                &date,
+                &app_id,
+                &app_name,
+                &title,
+                pid,
+                started,
+                ended,
+                kp,
+                mc,
+                se,
+                icon.as_deref(),
+            )?;
+        }
+        let minutes: Vec<_> = input_minutes_vec
+            .into_iter()
+            .map(|(m, kp, mc, mm, se)| (m, kp, mc, mm, se))
+            .collect();
+        db::replace_input_minutes_for_date(tx, &date, &minutes)?;
+        Ok(())
+    });
 }
 
 #[allow(dead_code)]

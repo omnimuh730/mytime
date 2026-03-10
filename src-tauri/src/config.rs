@@ -1,8 +1,4 @@
-use std::{
-    fs::{self, OpenOptions},
-    io,
-    path::PathBuf,
-};
+use std::{fs, io, path::PathBuf};
 
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -26,10 +22,6 @@ impl AppPaths {
 
         fs::create_dir_all(&data_dir)?;
         fs::create_dir_all(&log_dir)?;
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&db_path)?;
 
         Ok(Self {
             data_dir,

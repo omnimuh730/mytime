@@ -2,6 +2,7 @@ use std::{error::Error, path::Path, sync::OnceLock};
 
 mod app_state;
 mod app_usage_monitor;
+mod db;
 mod config;
 mod input_aggregator;
 mod input_monitor;
@@ -52,6 +53,9 @@ pub fn run() {
                 db_path = %paths.db_path.display(),
                 "initialized foundation paths"
             );
+
+            db::init(&paths.db_path)
+                .map_err(|e| Box::<dyn std::error::Error>::from(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
             let state = AppState::new(paths);
             app.manage(state);
