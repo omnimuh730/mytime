@@ -29,6 +29,7 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_System_LibraryLoader",

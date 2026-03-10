@@ -2,18 +2,19 @@ use std::{error::Error, path::Path, sync::OnceLock};
 
 mod app_state;
 mod app_usage_monitor;
-mod db;
 mod config;
+mod db;
 mod input_aggregator;
 mod input_monitor;
 mod ipc;
 mod models;
 mod network_monitor;
 mod services;
+mod startup;
 
 use app_state::AppState;
 use config::AppPaths;
-use tauri::{AppHandle, Manager, tray::{TrayIconBuilder, TrayIconEvent, TrayIcon} };
+use tauri::{ Manager, tray::{TrayIconBuilder, TrayIconEvent, TrayIcon} };
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -56,6 +57,9 @@ pub fn run() {
 
             db::init(&paths.db_path)
                 .map_err(|e| Box::<dyn std::error::Error>::from(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            // Register app to start at Windows login (once; no re-register).
+            startup::register_once();
 
             let state = AppState::new(paths);
             app.manage(state);

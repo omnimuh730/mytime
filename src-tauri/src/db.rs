@@ -1,7 +1,5 @@
 //! SQLite persistence for activity and network telemetry.
 //! Uses WAL mode, busy_timeout, synchronous=FULL for crash-safe atomic writes.
-
-use chrono::Utc;
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -95,11 +93,6 @@ fn flush_pending() -> Result<(), String> {
     .ok_or_else(|| "flush transaction failed".to_string())?;
 
     Ok(())
-}
-
-/// Get the configured inactivity interval in seconds (30s).
-pub fn inactivity_interval_secs() -> i64 {
-    30
 }
 
 /// Queue an input event for async batch insert.
@@ -223,6 +216,33 @@ where
     f(&guard).ok()
 }
 
+/// Get config value by key.
+pub fn get_config(key: &str) -> Option<String> {
+    with_conn(|conn| {
+        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = ?1")?;
+        let mut rows = stmt.query([key])?;
+        if let Some(row) = rows.next()? {
+            row.get(0)
+        } else {
+            Ok(String::new())
+        }
+    })
+}
+
+/// Set config value (upsert). Used e.g. to remember that startup was registered.
+pub fn set_config(key: &str, value: &str) -> Option<()> {
+    use chrono::Utc;
+    with_tx(|tx| {
+        let now = Utc::now().timestamp_millis();
+        tx.execute(
+            r#"INSERT INTO config (key, value, updated_at_ms) VALUES (?1, ?2, ?3)
+               ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at_ms = ?3"#,
+            rusqlite::params![key, value, now],
+        )?;
+        Ok(())
+    })
+}
+
 /// Run a function inside an immediate transaction (blocks until lock acquired).
 /// Ensures atomic writes and crash safety.
 fn with_tx<F, T>(f: F) -> Option<T>
@@ -269,34 +289,6 @@ pub fn insert_input_event(
     Ok(())
 }
 
-/// Upsert config value.
-pub fn set_config(key: &str, value: &str) -> Option<()> {
-    with_tx(|tx| {
-        let now = Utc::now().timestamp_millis();
-        tx.execute(
-            r#"INSERT INTO config (key, value, updated_at_ms) VALUES (?1, ?2, ?3)
-               ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at_ms = ?3"#,
-            rusqlite::params![key, value, now],
-        )?;
-        Ok(())
-    })
-}
-
-/// Get config value.
-pub fn get_config(key: &str) -> Option<String> {
-    with_conn(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT value FROM config WHERE key = ?1",
-        )?;
-        let mut rows = stmt.query([key])?;
-        if let Some(row) = rows.next()? {
-            row.get(0)
-        } else {
-            Ok(String::new())
-        }
-    })
-}
-
 /// Save activity session (upsert by id for today).
 pub fn upsert_activity_session(
     tx: &Transaction,
@@ -334,37 +326,6 @@ pub fn upsert_activity_session(
     )?;
     Ok(())
 }
-
-/// Upsert input minute bucket for a date.
-pub fn upsert_input_minute(
-    tx: &Transaction,
-    date: &str,
-    minute_of_day: u32,
-    key_presses: u32,
-    mouse_clicks: u32,
-    mouse_moves: u32,
-    scroll_events: u32,
-) -> Result<(), rusqlite::Error> {
-    tx.execute(
-        r#"INSERT INTO input_minutes (date, minute_of_day, key_presses, mouse_clicks, mouse_moves, scroll_events)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-           ON CONFLICT(date, minute_of_day) DO UPDATE SET
-             key_presses = key_presses + ?3,
-             mouse_clicks = mouse_clicks + ?4,
-             mouse_moves = mouse_moves + ?5,
-             scroll_events = scroll_events + ?6"#,
-        rusqlite::params![
-            date,
-            minute_of_day as i64,
-            key_presses as i64,
-            mouse_clicks as i64,
-            mouse_moves as i64,
-            scroll_events as i64,
-        ],
-    )?;
-    Ok(())
-}
-
 /// Replace input minutes for a date (clear and reinsert for today's snapshot).
 pub fn replace_input_minutes_for_date(
     tx: &Transaction,
