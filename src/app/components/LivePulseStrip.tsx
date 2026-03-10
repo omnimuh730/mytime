@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Wifi, Heart, Zap, Monitor } from "lucide-react";
+import type { AppInputMinuteDto, NetOverviewDto } from "../types/backend";
 
 interface PulseEvent {
   id: number;
   type: "active" | "idle" | "network-in" | "network-out" | "app-switch";
-  intensity: number; // 0-100
+  intensity: number;
   timestamp: number;
 }
 
@@ -15,86 +16,123 @@ interface ConnectionDot {
   flashing: boolean;
 }
 
-export function LivePulseStrip() {
-  const [apm, setApm] = useState(64);
-  const [apmHistory, setApmHistory] = useState<number[]>([]);
-  const [pulseEvents, setPulseEvents] = useState<PulseEvent[]>([]);
-  const [connections, setConnections] = useState<ConnectionDot[]>([]);
-  const [totalActions, setTotalActions] = useState(2847);
+interface Props {
+  inputMinutes?: AppInputMinuteDto[];
+  networkOverview?: NetOverviewDto | null;
+  sessionDuration?: string;
+}
+
+export function LivePulseStrip({
+  inputMinutes = [],
+  networkOverview = null,
+  sessionDuration,
+}: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const prevNetRef = useRef({ dl: 0, ul: 0 });
 
-  // Initialize
-  useEffect(() => {
-    // Generate 60 minutes of pulse history
-    const initialPulse: PulseEvent[] = Array.from({ length: 120 }, (_, i) => ({
-      id: i,
-      type: (["active", "idle", "network-in", "network-out", "app-switch"] as const)[
-        Math.floor(Math.random() * 5)
-      ],
-      intensity: Math.random() > 0.85 ? 10 + Math.random() * 30 : 40 + Math.random() * 60,
-      timestamp: Date.now() - (120 - i) * 30000,
-    }));
-    setPulseEvents(initialPulse);
-
-    // APM history (last 30 data points for heart-rate)
-    const initialApm = Array.from({ length: 40 }, () =>
-      Math.round(30 + Math.random() * 70)
+  const totalActions = useMemo(() => {
+    return inputMinutes.reduce(
+      (sum, m) =>
+        sum + m.keyPresses + m.mouseClicks + m.mouseMoves + m.scrollEvents,
+      0,
     );
-    setApmHistory(initialApm);
+  }, [inputMinutes]);
 
-    // Network connections
-    const initialConns: ConnectionDot[] = Array.from({ length: 24 }, (_, i) => ({
+  const currentApm = useMemo(() => {
+    if (inputMinutes.length === 0) return 0;
+    const now = new Date();
+    const currentMin = now.getHours() * 60 + now.getMinutes();
+    const recentBuckets = inputMinutes.filter(
+      (m) => m.minuteOfDay >= currentMin - 5 && m.minuteOfDay <= currentMin,
+    );
+    if (recentBuckets.length === 0) return 0;
+    const total = recentBuckets.reduce(
+      (s, m) =>
+        s + m.keyPresses + m.mouseClicks + m.mouseMoves + m.scrollEvents,
+      0,
+    );
+    return Math.round(total / recentBuckets.length);
+  }, [inputMinutes]);
+
+  const apmHistory = useMemo(() => {
+    if (inputMinutes.length === 0) return Array(40).fill(0) as number[];
+    const sorted = [...inputMinutes].sort(
+      (a, b) => a.minuteOfDay - b.minuteOfDay,
+    );
+    const last40 = sorted.slice(-40);
+    return last40.map((m) =>
+      Math.min(
+        100,
+        m.keyPresses * 12 +
+          m.mouseClicks * 10 +
+          m.scrollEvents * 8 +
+          m.mouseMoves * 3,
+      ),
+    );
+  }, [inputMinutes]);
+
+  const pulseEvents = useMemo((): PulseEvent[] => {
+    if (inputMinutes.length === 0) return [];
+    const sorted = [...inputMinutes].sort(
+      (a, b) => a.minuteOfDay - b.minuteOfDay,
+    );
+    const last120 = sorted.slice(-120);
+    return last120.map((m, i) => {
+      const intensity = Math.min(
+        100,
+        m.keyPresses * 12 +
+          m.mouseClicks * 10 +
+          m.scrollEvents * 8 +
+          m.mouseMoves * 3,
+      );
+      const isIdle =
+        m.keyPresses === 0 &&
+        m.mouseClicks === 0 &&
+        m.mouseMoves === 0 &&
+        m.scrollEvents === 0;
+      const type: PulseEvent["type"] = isIdle
+        ? "idle"
+        : m.keyPresses > m.mouseClicks
+          ? "active"
+          : "app-switch";
+      return {
+        id: m.minuteOfDay * 1000 + i,
+        type,
+        intensity: Math.max(intensity, 5),
+        timestamp: Date.now() - (last120.length - i) * 60000,
+      };
+    });
+  }, [inputMinutes]);
+
+  const [connections, setConnections] = useState<ConnectionDot[]>(
+    Array.from({ length: 24 }, (_, i) => ({
       id: i,
-      active: Math.random() > 0.2,
-      direction: Math.random() > 0.5 ? "in" : "out",
+      active: false,
+      direction: (i % 2 === 0 ? "in" : "out") as "in" | "out",
       flashing: false,
-    }));
-    setConnections(initialConns);
-  }, []);
+    })),
+  );
 
-  // Live updates
   useEffect(() => {
-    const apmInterval = setInterval(() => {
-      const newApm = Math.round(
-        30 + Math.random() * 70 + (Math.random() > 0.9 ? 30 : 0)
-      );
-      setApm(newApm);
-      setApmHistory((prev) => [...prev.slice(-39), newApm]);
-      setTotalActions((prev) => prev + Math.round(Math.random() * 5));
-    }, 1500);
+    if (!networkOverview) return;
+    const connCount = networkOverview.activeConnections;
+    const dlNow = networkOverview.downloadBytesToday;
+    const ulNow = networkOverview.uploadBytesToday;
+    const dlDelta = dlNow - prevNetRef.current.dl;
+    const ulDelta = ulNow - prevNetRef.current.ul;
+    prevNetRef.current = { dl: dlNow, ul: ulNow };
+    const hasTraffic = dlDelta > 0 || ulDelta > 0;
 
-    const pulseInterval = setInterval(() => {
-      setPulseEvents((prev) => [
-        ...prev.slice(-119),
-        {
-          id: Date.now(),
-          type: (["active", "idle", "network-in", "network-out", "app-switch"] as const)[
-            Math.floor(Math.random() * 5)
-          ],
-          intensity: Math.random() > 0.85 ? 10 + Math.random() * 30 : 40 + Math.random() * 60,
-          timestamp: Date.now(),
-        },
-      ]);
-    }, 2000);
+    setConnections((prev) =>
+      prev.map((c, i) => ({
+        ...c,
+        active: i < Math.min(connCount, 24),
+        direction: i % 2 === 0 ? "in" : "out",
+        flashing: hasTraffic && i < Math.min(connCount, 24) && Math.random() > 0.4,
+      })),
+    );
+  }, [networkOverview]);
 
-    const connInterval = setInterval(() => {
-      setConnections((prev) =>
-        prev.map((c) => ({
-          ...c,
-          flashing: Math.random() > 0.6,
-          active: Math.random() > 0.15,
-        }))
-      );
-    }, 800);
-
-    return () => {
-      clearInterval(apmInterval);
-      clearInterval(pulseInterval);
-      clearInterval(connInterval);
-    };
-  }, []);
-
-  // Auto-scroll the timeline
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
@@ -110,8 +148,16 @@ export function LivePulseStrip() {
   };
 
   const apmColor =
-    apm > 90 ? "#34d399" : apm > 60 ? "#6366f1" : apm > 30 ? "#eab308" : "#ef4444";
+    currentApm > 90
+      ? "#34d399"
+      : currentApm > 60
+        ? "#6366f1"
+        : currentApm > 30
+          ? "#eab308"
+          : "#ef4444";
   const maxApm = Math.max(...apmHistory, 1);
+
+  const activeConns = networkOverview?.activeConnections ?? 0;
 
   return (
     <div className="bg-card/60 backdrop-blur-sm rounded-2xl border border-border overflow-hidden">
@@ -124,10 +170,12 @@ export function LivePulseStrip() {
               style={{ color: apmColor }}
               fill={apmColor}
             />
-            <div
-              className="absolute inset-0 rounded-full animate-ping opacity-30"
-              style={{ backgroundColor: apmColor }}
-            />
+            {currentApm > 0 && (
+              <div
+                className="absolute inset-0 rounded-full animate-ping opacity-30"
+                style={{ backgroundColor: apmColor }}
+              />
+            )}
           </div>
           <div className="flex flex-col">
             <div className="flex items-baseline gap-1">
@@ -135,7 +183,7 @@ export function LivePulseStrip() {
                 className="text-xl tabular-nums transition-colors duration-300"
                 style={{ color: apmColor }}
               >
-                {apm}
+                {currentApm}
               </span>
               <span className="text-xs text-muted-foreground">APM</span>
             </div>
@@ -143,7 +191,6 @@ export function LivePulseStrip() {
               Actions/Min
             </span>
           </div>
-          {/* Mini ECG line */}
           <div className="flex items-end gap-px h-8 w-[60px] sm:w-[100px]">
             {apmHistory.slice(-30).map((val, i) => (
               <div
@@ -151,6 +198,7 @@ export function LivePulseStrip() {
                 className="flex-1 rounded-sm transition-all duration-300"
                 style={{
                   height: `${(val / maxApm) * 100}%`,
+                  minHeight: val > 0 ? "2px" : "0px",
                   backgroundColor: apmColor,
                   opacity: 0.3 + (i / 30) * 0.7,
                 }}
@@ -165,7 +213,7 @@ export function LivePulseStrip() {
             <div className="flex items-center gap-2">
               <Zap className="w-3.5 h-3.5 text-primary" />
               <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                Live Pulse — Last 60 min
+                Live Pulse — Last {Math.min(inputMinutes.length, 120)} min
               </span>
             </div>
             <div className="flex items-center gap-1.5">
@@ -198,7 +246,9 @@ export function LivePulseStrip() {
         <div className="hidden md:flex items-center gap-3 px-5 border-l border-border shrink-0">
           <div className="flex flex-col items-center">
             <Wifi className="w-4 h-4 text-muted-foreground mb-1" />
-            <span className="text-[10px] text-muted-foreground">Conns</span>
+            <span className="text-[10px] text-muted-foreground tabular-nums">
+              {activeConns}
+            </span>
           </div>
           <div className="grid grid-cols-8 grid-rows-3 gap-[3px]">
             {connections.map((conn) => (
@@ -209,15 +259,16 @@ export function LivePulseStrip() {
                   backgroundColor: !conn.active
                     ? "rgba(122, 123, 154, 0.15)"
                     : conn.flashing
-                    ? conn.direction === "in"
-                      ? "#34d399"
-                      : "#ef4444"
-                    : conn.direction === "in"
-                    ? "rgba(52, 211, 153, 0.3)"
-                    : "rgba(239, 68, 68, 0.3)",
-                  boxShadow: conn.flashing && conn.active
-                    ? `0 0 6px ${conn.direction === "in" ? "#34d399" : "#ef4444"}40`
-                    : "none",
+                      ? conn.direction === "in"
+                        ? "#34d399"
+                        : "#ef4444"
+                      : conn.direction === "in"
+                        ? "rgba(52, 211, 153, 0.3)"
+                        : "rgba(239, 68, 68, 0.3)",
+                  boxShadow:
+                    conn.flashing && conn.active
+                      ? `0 0 6px ${conn.direction === "in" ? "#34d399" : "#ef4444"}40`
+                      : "none",
                 }}
               />
             ))}
@@ -238,7 +289,9 @@ export function LivePulseStrip() {
         <div className="hidden sm:flex items-center px-3 sm:px-5 border-l border-border shrink-0">
           <div className="flex flex-col items-center gap-1">
             <Monitor className="w-4 h-4 text-primary" />
-            <span className="text-xs text-foreground tabular-nums">6h 42m</span>
+            <span className="text-xs text-foreground tabular-nums">
+              {sessionDuration ?? "—"}
+            </span>
             <span className="text-[10px] text-muted-foreground">Session</span>
           </div>
         </div>

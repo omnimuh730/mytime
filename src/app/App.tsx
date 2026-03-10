@@ -247,26 +247,38 @@ export default function App() {
 }
 
 function DashboardView({ summary }: { summary: DashboardSummaryDto | null }) {
+  const { overview: netOverview } = useNetworkOverview();
+  const { data: appUsageData } = useActivityAppUsage();
+
+  const inputMinutes = useMemo(
+    () => appUsageData?.inputMinutes ?? [],
+    [appUsageData],
+  );
+
   return (
     <div className="space-y-4 sm:space-y-6">
       {/* Live Pulse Strip */}
-      <LivePulseStrip />
+      <LivePulseStrip
+        inputMinutes={inputMinutes}
+        networkOverview={netOverview}
+        sessionDuration={summary?.metrics.activeTimeToday.value}
+      />
 
       {/* Stat Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <StatCard
           title={summary?.metrics.activeTimeToday.title ?? "Active Time Today"}
-          value={summary?.metrics.activeTimeToday.value ?? "6h 42m"}
-          change={summary?.metrics.activeTimeToday.change ?? "+12%"}
+          value={summary?.metrics.activeTimeToday.value ?? "—"}
+          change={summary?.metrics.activeTimeToday.change ?? undefined}
           trend={summary?.metrics.activeTimeToday.trend ?? "up"}
           icon={<Timer className="w-5 h-5" />}
           color="bg-primary/10 text-primary"
-          subtitle={summary?.metrics.activeTimeToday.subtitle ?? "vs yesterday"}
+          subtitle={summary?.metrics.activeTimeToday.subtitle ?? "first → last activity today"}
         />
         <StatCard
           title={summary?.metrics.mouseEvents.title ?? "Mouse Events"}
-          value={summary?.metrics.mouseEvents.value ?? "14,827"}
-          change={summary?.metrics.mouseEvents.change ?? "+8%"}
+          value={summary?.metrics.mouseEvents.value ?? "—"}
+          change={summary?.metrics.mouseEvents.change ?? undefined}
           trend={summary?.metrics.mouseEvents.trend ?? "up"}
           icon={<Mouse className="w-5 h-5" />}
           color="bg-chart-2/10 text-chart-2"
@@ -274,8 +286,8 @@ function DashboardView({ summary }: { summary: DashboardSummaryDto | null }) {
         />
         <StatCard
           title={summary?.metrics.keystrokes.title ?? "Keystrokes"}
-          value={summary?.metrics.keystrokes.value ?? "23,456"}
-          change={summary?.metrics.keystrokes.change ?? "-3%"}
+          value={summary?.metrics.keystrokes.value ?? "—"}
+          change={summary?.metrics.keystrokes.change ?? undefined}
           trend={summary?.metrics.keystrokes.trend ?? "down"}
           icon={<Keyboard className="w-5 h-5" />}
           color="bg-chart-3/10 text-chart-3"
@@ -283,8 +295,8 @@ function DashboardView({ summary }: { summary: DashboardSummaryDto | null }) {
         />
         <StatCard
           title={summary?.metrics.networkTraffic.title ?? "Network Traffic"}
-          value={summary?.metrics.networkTraffic.value ?? "26.1 GB"}
-          change={summary?.metrics.networkTraffic.change ?? "+24%"}
+          value={summary?.metrics.networkTraffic.value ?? "—"}
+          change={summary?.metrics.networkTraffic.change ?? undefined}
           trend={summary?.metrics.networkTraffic.trend ?? "up"}
           icon={<ArrowDownUp className="w-5 h-5" />}
           color="bg-chart-4/10 text-chart-4"
@@ -293,18 +305,21 @@ function DashboardView({ summary }: { summary: DashboardSummaryDto | null }) {
       </div>
 
       {/* Focus Correlator (full width) */}
-      <FocusCorrelator />
+      <FocusCorrelator inputMinutes={inputMinutes} />
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
         <ActivityTimeline />
-        <NetworkUsageChart />
+        <NetworkUsageChart
+          downloadBytes={netOverview?.downloadBytesToday ?? 0}
+          uploadBytes={netOverview?.uploadBytesToday ?? 0}
+        />
       </div>
 
       {/* Bottom Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 items-stretch">
         <div className="lg:col-span-1 [&>div]:h-full">
-          <NetworkStatus />
+          <NetworkStatus overview={netOverview} />
         </div>
         <div className="lg:col-span-2 [&>div]:h-full">
           <InputVisualizer />

@@ -12,8 +12,8 @@ import type {
   TimelineMarker,
 } from "./components/timeline/timeline-data";
 
-const DAY_START_MIN = 7 * 60;
-const DAY_END_MIN = 21 * 60;
+const DAY_START_MIN = 0;
+const DAY_END_MIN = 24 * 60;
 const MIN_BLOCK_MINUTES = 1 / 60;
 
 const APP_META: Record<

@@ -24,9 +24,9 @@ interface TimelineTracksProps {
   selectedBlockIds: Set<string>;
 }
 
-// Time constants
-const DAY_START = 7 * 60;
-const DAY_END = 21 * 60;
+// Time constants — full 24h so no activity is clipped
+const DAY_START = 0;
+const DAY_END = 24 * 60;
 const TOTAL_MINUTES = DAY_END - DAY_START;
 
 const STATUS_COLORS: Record<string, string> = {
@@ -118,11 +118,15 @@ export function TimelineTracks({
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const [hoveredMarker, setHoveredMarker] = useState<TimelineMarker | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
 
   // Viewport window state (in minutes)
   const viewSpanMinutes = TOTAL_MINUTES / zoom;
-  const [viewStart, setViewStart] = useState(DAY_START);
+  const [viewStart, setViewStart] = useState(() => {
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const span = TOTAL_MINUTES / 1.5; // initial zoom
+    return Math.max(DAY_START, Math.min(nowMin - span / 2, DAY_END - span));
+  });
   const viewEnd = Math.min(viewStart + viewSpanMinutes, DAY_END);
 
   // Clamp viewStart when zoom changes
@@ -545,7 +549,7 @@ export function TimelineTracks({
               <div className="absolute inset-0 flex items-end">
                 {apmData
                   .filter((d) => d.minute >= Math.floor(viewStart) - 1 && d.minute <= Math.ceil(viewEnd) + 1)
-                  .map((d, i) => {
+                  .map((d) => {
                     const x = getX(d.minute);
                     const w = Math.max(pxPerMin, 1);
                     const h = Math.max((d.apm / 100) * 24, 1);
@@ -576,11 +580,10 @@ export function TimelineTracks({
       <div className="border-t border-border bg-secondary/20 px-0">
         {/* Time labels */}
         <div className="relative h-4">
-          {Array.from({ length: 15 }, (_, i) => {
-            const h = 7 + i;
-            if (h > 21) return null;
+          {Array.from({ length: 9 }, (_, i) => {
+            const h = i * 3;
             const x = ((h * 60 - DAY_START) / TOTAL_MINUTES) * minimapWidth;
-            const h12 = h > 12 ? h - 12 : h;
+            const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
             const ampm = h >= 12 ? "PM" : "AM";
             return (
               <span

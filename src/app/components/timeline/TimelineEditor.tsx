@@ -32,7 +32,7 @@ export function TimelineEditor({
   activityStatus: externalActivityStatus,
   isLoading = false,
 }: TimelineEditorProps) {
-  const [blocks, setBlocks] = useState<TimelineBlock[]>(() =>
+  const [blocks] = useState<TimelineBlock[]>(() =>
     externalBlocks ?? generateTimelineBlocks()
   );
   const [zoom, setZoom] = useState(1.5);

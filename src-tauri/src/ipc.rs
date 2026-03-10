@@ -91,8 +91,9 @@ pub fn get_network_usage_history() -> Result<Vec<NetUsagePointDto>, String> {
 }
 
 #[tauri::command]
-pub fn run_speed_test() -> Result<SpeedTestResultDto, String> {
-    let (dl, ul, lat) = network_monitor::run_speed_test();
+pub async fn run_speed_test() -> Result<SpeedTestResultDto, String> {
+    let handle = std::thread::spawn(network_monitor::run_speed_test);
+    let (dl, ul, lat) = handle.join().map_err(|_| "speed test thread panicked".to_string())?;
     Ok(SpeedTestResultDto {
         download_bps: dl,
         upload_bps: ul,
