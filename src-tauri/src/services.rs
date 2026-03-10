@@ -4,7 +4,7 @@ use crate::{
     app_state::AppState,
     models::{
         ActivityTimelineDto, ActivityTimelinePointDto, AppStatusDto, DashboardMetricsDto,
-        DashboardSummaryDto, MetricCardDto, MetricTrendDto, NetworkSummaryDto,
+        DashboardSummaryDto, InputStatsDto, MetricCardDto, MetricTrendDto, NetworkSummaryDto,
     },
 };
 
@@ -59,34 +59,73 @@ pub fn build_app_status(state: &AppState) -> AppStatusDto {
     }
 }
 
-pub fn build_dashboard_summary() -> DashboardSummaryDto {
+pub fn build_dashboard_summary(stats: Option<InputStatsDto>) -> DashboardSummaryDto {
     let today = Local::now().date_naive();
     let seed = today.ordinal() % 7;
 
-    DashboardSummaryDto {
-        generated_at: Utc::now().to_rfc3339(),
-        metrics: DashboardMetricsDto {
-            active_time_today: metric(
+    let (active_time, mouse_events, keystrokes) = match stats {
+        Some(s) => {
+            let active_mins = s
+                .first_activity_ts_ms
+                .zip(s.last_activity_ts_ms)
+                .map(|(first, last)| ((last - first) / 60_000).max(0) as u64)
+                .unwrap_or(0);
+            let active_str = format!("{}h {:02}m", active_mins / 60, active_mins % 60);
+            (
+                metric(
+                    "Active Time Today",
+                    active_str,
+                    None,
+                    None,
+                    Some("first → last activity today"),
+                ),
+                metric(
+                    "Mouse Events",
+                    format_count(s.mouse_events_today as usize),
+                    None,
+                    None,
+                    Some("clicks & movements"),
+                ),
+                metric(
+                    "Keystrokes",
+                    format_count(s.key_presses_today as usize),
+                    None,
+                    None,
+                    Some("total today"),
+                ),
+            )
+        }
+        None => (
+            metric(
                 "Active Time Today",
                 format!("{}h {:02}m", 6 + (seed / 3), 32 + seed * 3),
                 Some("+12%"),
                 Some(MetricTrendDto::Up),
                 Some("vs yesterday"),
             ),
-            mouse_events: metric(
+            metric(
                 "Mouse Events",
                 format_count(14_200 + seed as usize * 137),
                 Some("+8%"),
                 Some(MetricTrendDto::Up),
                 Some("clicks & movements"),
             ),
-            keystrokes: metric(
+            metric(
                 "Keystrokes",
                 format_count(22_900 + seed as usize * 211),
                 Some("-3%"),
                 Some(MetricTrendDto::Down),
                 Some("total today"),
             ),
+        ),
+    };
+
+    DashboardSummaryDto {
+        generated_at: Utc::now().to_rfc3339(),
+        metrics: DashboardMetricsDto {
+            active_time_today: active_time,
+            mouse_events,
+            keystrokes,
             network_traffic: metric(
                 "Network Traffic",
                 format!("{:.1} GB", 24.8 + seed as f32 * 0.4),

@@ -2,6 +2,8 @@ use std::{error::Error, path::Path, sync::OnceLock};
 
 mod app_state;
 mod config;
+mod input_aggregator;
+mod input_monitor;
 mod ipc;
 mod models;
 mod services;
@@ -54,11 +56,15 @@ pub fn run() {
 
             info!("registered backend foundation state");
 
+            input_monitor::start_global_input_monitor(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             ipc::get_app_status,
             ipc::get_dashboard_summary,
+            ipc::get_input_stats,
+            ipc::get_recent_input_events,
             ipc::get_activity_timeline,
             ipc::get_network_summary
         ])

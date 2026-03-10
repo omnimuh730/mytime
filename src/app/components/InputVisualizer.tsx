@@ -1,5 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
+import { subscribeToInputMonitor } from "../api/inputMonitor";
+import { hasTauriRuntime } from "../api/tauri";
+import type { InputMonitorEventDto } from "../types/backend";
+
 interface InputEvent {
   id: number;
   kind: "keyboard" | "mouse" | "scroll";
@@ -12,22 +16,16 @@ interface KeyBinding {
   label: string;
 }
 
-const KEY_ALIAS_GROUPS: Record<string, string[]> = {
-  shift: ["shift", "shift2"],
-  shift2: ["shift", "shift2"],
-  option: ["option", "option2"],
-  option2: ["option", "option2"],
-  command: ["command", "command2"],
-  command2: ["command", "command2"],
-};
-
 const KEY_DISPLAY_LABELS: Record<string, string> = {
   space: "Space",
   return: "Return",
   shift: "Shift",
+  shift2: "Right Shift",
   control: "Ctrl",
   option: "Alt",
+  option2: "Right Alt",
   command: "Meta",
+  command2: "Right Meta",
   tab: "Tab",
   esc: "Esc",
   delete: "Backspace",
@@ -90,17 +88,20 @@ function getKeyBinding(event: KeyboardEvent): KeyBinding | null {
     case "NumpadEnter":
       return createKeyBinding("np_enter");
     case "ShiftLeft":
-    case "ShiftRight":
       return createKeyBinding("shift");
+    case "ShiftRight":
+      return createKeyBinding("shift2");
     case "ControlLeft":
     case "ControlRight":
       return createKeyBinding("control");
     case "AltLeft":
-    case "AltRight":
       return createKeyBinding("option");
+    case "AltRight":
+      return createKeyBinding("option2");
     case "MetaLeft":
-    case "MetaRight":
       return createKeyBinding("command");
+    case "MetaRight":
+      return createKeyBinding("command2");
     case "Tab":
       return createKeyBinding("tab");
     case "Escape":
@@ -210,6 +211,58 @@ export function InputVisualizer() {
     ]);
   }, []);
 
+  const resetScrollIndicator = useCallback(() => {
+    if (scrollResetTimeoutRef.current !== null) {
+      window.clearTimeout(scrollResetTimeoutRef.current);
+    }
+    scrollResetTimeoutRef.current = window.setTimeout(() => {
+      setScrollDir(null);
+    }, 220);
+  }, []);
+
+  const processMonitorEvent = useCallback(
+    (event: InputMonitorEventDto) => {
+      if (event.kind === "keyboard" && event.stateKey) {
+        if (event.action === "press") {
+          setPressedKeys((prev) => {
+            const next = new Set(prev);
+            next.add(event.stateKey!);
+            return next;
+          });
+        } else if (event.action === "release") {
+          setPressedKeys((prev) => {
+            if (!prev.has(event.stateKey!)) {
+              return prev;
+            }
+
+            const next = new Set(prev);
+            next.delete(event.stateKey!);
+            return next;
+          });
+        }
+      }
+
+      if (event.button === "left") {
+        setMouseLeft(event.action === "press");
+      } else if (event.button === "right") {
+        setMouseRight(event.action === "press");
+      } else if (event.button === "middle") {
+        setScrollClick(event.action === "press");
+      }
+
+      if (event.direction) {
+        setScrollDir(event.direction);
+        resetScrollIndicator();
+      }
+
+      addEvent({
+        kind: event.kind,
+        label: event.label,
+      });
+    },
+    [addEvent, resetScrollIndicator],
+  );
+
   useEffect(() => {
     const clearTransientState = () => {
       setPressedKeys(new Set());
@@ -219,15 +272,6 @@ export function InputVisualizer() {
       setScrollDir(null);
     };
 
-    const resetScrollIndicator = () => {
-      if (scrollResetTimeoutRef.current !== null) {
-        window.clearTimeout(scrollResetTimeoutRef.current);
-      }
-      scrollResetTimeoutRef.current = window.setTimeout(() => {
-        setScrollDir(null);
-      }, 220);
-    };
-
     const handleKeyDown = (event: KeyboardEvent) => {
       const binding = getKeyBinding(event);
       if (!binding) {
@@ -235,12 +279,13 @@ export function InputVisualizer() {
       }
 
       if (!event.repeat) {
-        setPressedKeys((prev) => {
-          const next = new Set(prev);
-          next.add(binding.stateKey);
-          return next;
+        processMonitorEvent({
+          kind: "keyboard",
+          action: "press",
+          label: `Press ${binding.label}`,
+          stateKey: binding.stateKey,
+          timestamp: Date.now(),
         });
-        addEvent({ kind: "keyboard", label: `Press ${binding.label}` });
       }
     };
 
@@ -250,52 +295,94 @@ export function InputVisualizer() {
         return;
       }
 
-      setPressedKeys((prev) => {
-        if (!prev.has(binding.stateKey)) {
-          return prev;
-        }
-
-        const next = new Set(prev);
-        next.delete(binding.stateKey);
-        return next;
+      processMonitorEvent({
+        kind: "keyboard",
+        action: "release",
+        label: `Release ${binding.label}`,
+        stateKey: binding.stateKey,
+        timestamp: Date.now(),
       });
-      addEvent({ kind: "keyboard", label: `Release ${binding.label}` });
     };
 
     const handleMouseDown = (event: MouseEvent) => {
       if (event.button === 0) {
-        setMouseLeft(true);
-        addEvent({ kind: "mouse", label: "Left Click" });
+        processMonitorEvent({
+          kind: "mouse",
+          action: "press",
+          label: "Left Click",
+          button: "left",
+          x: event.clientX,
+          y: event.clientY,
+          timestamp: Date.now(),
+        });
       } else if (event.button === 1) {
-        setScrollClick(true);
-        addEvent({ kind: "scroll", label: "Middle Click" });
+        processMonitorEvent({
+          kind: "scroll",
+          action: "press",
+          label: "Middle Click",
+          button: "middle",
+          x: event.clientX,
+          y: event.clientY,
+          timestamp: Date.now(),
+        });
       } else if (event.button === 2) {
-        setMouseRight(true);
-        addEvent({ kind: "mouse", label: "Right Click" });
+        processMonitorEvent({
+          kind: "mouse",
+          action: "press",
+          label: "Right Click",
+          button: "right",
+          x: event.clientX,
+          y: event.clientY,
+          timestamp: Date.now(),
+        });
       }
     };
 
     const handleMouseUp = (event: MouseEvent) => {
       if (event.button === 0) {
-        setMouseLeft(false);
-        addEvent({ kind: "mouse", label: "Left Release" });
+        processMonitorEvent({
+          kind: "mouse",
+          action: "release",
+          label: "Left Release",
+          button: "left",
+          x: event.clientX,
+          y: event.clientY,
+          timestamp: Date.now(),
+        });
       } else if (event.button === 1) {
-        setScrollClick(false);
-        addEvent({ kind: "scroll", label: "Middle Release" });
+        processMonitorEvent({
+          kind: "scroll",
+          action: "release",
+          label: "Middle Release",
+          button: "middle",
+          x: event.clientX,
+          y: event.clientY,
+          timestamp: Date.now(),
+        });
       } else if (event.button === 2) {
-        setMouseRight(false);
-        addEvent({ kind: "mouse", label: "Right Release" });
+        processMonitorEvent({
+          kind: "mouse",
+          action: "release",
+          label: "Right Release",
+          button: "right",
+          x: event.clientX,
+          y: event.clientY,
+          timestamp: Date.now(),
+        });
       }
     };
 
     const handleWheel = (event: WheelEvent) => {
-      const direction = event.deltaY < 0 ? "up" : "down";
-      setScrollDir(direction);
-      addEvent({
+      const direction: "up" | "down" = event.deltaY < 0 ? "up" : "down";
+      processMonitorEvent({
         kind: "scroll",
+        action: "wheel",
         label: direction === "up" ? "Scroll Up" : "Scroll Down",
+        direction,
+        x: event.clientX,
+        y: event.clientY,
+        timestamp: Date.now(),
       });
-      resetScrollIndicator();
     };
 
     const handleMouseMove = (event: MouseEvent) => {
@@ -311,21 +398,41 @@ export function InputVisualizer() {
 
       lastPointerRef.current = { x: event.clientX, y: event.clientY };
       lastMoveLogAtRef.current = now;
-      addEvent({
+      processMonitorEvent({
         kind: "mouse",
+        action: "move",
         label: `Move ${Math.round(event.clientX)}, ${Math.round(event.clientY)}`,
+        x: event.clientX,
+        y: event.clientY,
+        timestamp: now,
       });
     };
 
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-    window.addEventListener("mousedown", handleMouseDown);
-    window.addEventListener("mouseup", handleMouseUp);
-    window.addEventListener("wheel", handleWheel, { passive: true });
-    window.addEventListener("mousemove", handleMouseMove, { passive: true });
-    window.addEventListener("blur", clearTransientState);
+    let disposeGlobalListener: (() => void) | undefined;
+    let cancelled = false;
+
+    if (hasTauriRuntime()) {
+      void (async () => {
+        const unlisten = await subscribeToInputMonitor(processMonitorEvent);
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        disposeGlobalListener = unlisten;
+      })();
+    } else {
+      window.addEventListener("keydown", handleKeyDown);
+      window.addEventListener("keyup", handleKeyUp);
+      window.addEventListener("mousedown", handleMouseDown);
+      window.addEventListener("mouseup", handleMouseUp);
+      window.addEventListener("wheel", handleWheel, { passive: true });
+      window.addEventListener("mousemove", handleMouseMove, { passive: true });
+      window.addEventListener("blur", clearTransientState);
+    }
 
     return () => {
+      cancelled = true;
+      disposeGlobalListener?.();
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("mousedown", handleMouseDown);
@@ -337,11 +444,10 @@ export function InputVisualizer() {
         window.clearTimeout(scrollResetTimeoutRef.current);
       }
     };
-  }, [addEvent]);
+  }, [processMonitorEvent]);
 
   const isKeyPressed = (key: string) => {
-    const aliases = KEY_ALIAS_GROUPS[key] ?? [key];
-    return aliases.some((alias) => pressedKeys.has(alias));
+    return pressedKeys.has(key);
   };
 
   const handlePreventContextMenu = useCallback((event: React.MouseEvent) => {
@@ -557,7 +663,7 @@ export function InputVisualizer() {
       <div className="flex items-center justify-between mb-3">
         <div>
           <h3 className="text-foreground">Input Monitor</h3>
-          <p className="text-muted-foreground text-xs mt-1">Live activity inside this app window</p>
+          <p className="text-muted-foreground text-xs mt-1">System-wide keyboard and mouse activity</p>
         </div>
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -674,7 +780,7 @@ export function InputVisualizer() {
           <div className="sm:col-span-2 space-y-1.5 overflow-hidden">
             {recentEvents.length === 0 && (
               <div className="text-xs text-muted-foreground px-3 py-2 rounded-lg bg-secondary/20">
-                Interact with the app window to see keyboard, mouse, and wheel events here.
+                Use the system normally and this monitor will show global keyboard, mouse, and wheel events here.
               </div>
             )}
             {recentEvents.slice(0, 6).map((evt, i) => (

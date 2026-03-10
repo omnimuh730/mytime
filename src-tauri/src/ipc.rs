@@ -2,7 +2,11 @@ use tauri::State;
 
 use crate::{
     app_state::AppState,
-    models::{ActivityTimelineDto, AppStatusDto, DashboardSummaryDto, NetworkSummaryDto},
+    input_aggregator,
+    models::{
+        ActivityTimelineDto, AppStatusDto, DashboardSummaryDto, LiveFeedEventDto,
+        NetworkSummaryDto,
+    },
     services,
 };
 
@@ -13,7 +17,26 @@ pub fn get_app_status(state: State<'_, AppState>) -> Result<AppStatusDto, String
 
 #[tauri::command]
 pub fn get_dashboard_summary() -> Result<DashboardSummaryDto, String> {
-    Ok(services::build_dashboard_summary())
+    let stats = input_aggregator::get_stats();
+    Ok(services::build_dashboard_summary(stats))
+}
+
+#[tauri::command]
+pub fn get_input_stats() -> Result<crate::models::InputStatsDto, String> {
+    Ok(input_aggregator::get_stats().unwrap_or_else(|| {
+        crate::models::InputStatsDto {
+            key_presses_today: 0,
+            mouse_events_today: 0,
+            scroll_events_today: 0,
+            first_activity_ts_ms: None,
+            last_activity_ts_ms: None,
+        }
+    }))
+}
+
+#[tauri::command]
+pub fn get_recent_input_events(limit: Option<u32>) -> Result<Vec<LiveFeedEventDto>, String> {
+    Ok(input_aggregator::get_recent_events(limit))
 }
 
 #[tauri::command]

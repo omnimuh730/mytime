@@ -61,3 +61,28 @@ export interface NetworkSummaryDto {
   activeConnections: MetricCardDto;
   uniqueDomains: MetricCardDto;
 }
+
+export type InputMonitorKind = "keyboard" | "mouse" | "scroll";
+export type InputMonitorAction = "press" | "release" | "move" | "wheel";
+export type InputMonitorButton = "left" | "right" | "middle";
+export type InputMonitorDirection = "up" | "down";
+
+export interface InputMonitorEventDto {
+  kind: InputMonitorKind;
+  action: InputMonitorAction;
+  label: string;
+  stateKey?: string | null;
+  button?: InputMonitorButton | null;
+  direction?: InputMonitorDirection | null;
+  x?: number | null;
+  y?: number | null;
+  timestamp: number;
+}
+
+export interface LiveFeedEventDto {
+  id: number;
+  eventType: "mouse" | "keyboard" | "scroll";
+  description: string;
+  timestamp: string;
+  detail?: string | null;
+}

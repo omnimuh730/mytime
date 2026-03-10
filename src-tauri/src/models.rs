@@ -82,3 +82,25 @@ pub struct NetworkSummaryDto {
     pub active_connections: MetricCardDto,
     pub unique_domains: MetricCardDto,
 }
+
+/// Real-time input stats from the global hook aggregator (same source as dashboard + live feed).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputStatsDto {
+    pub key_presses_today: u64,
+    pub mouse_events_today: u64,
+    pub scroll_events_today: u64,
+    pub first_activity_ts_ms: Option<i64>,
+    pub last_activity_ts_ms: Option<i64>,
+}
+
+/// Single event for the live activity feed (from the same global input stream).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveFeedEventDto {
+    pub id: u64,
+    pub event_type: String,
+    pub description: String,
+    pub timestamp: String,
+    pub detail: Option<String>,
+}
