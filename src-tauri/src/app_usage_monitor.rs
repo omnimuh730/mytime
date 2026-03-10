@@ -1,6 +1,6 @@
-use chrono::{Local, Utc};
+use chrono::{Local, Timelike, Utc};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::{Mutex, OnceLock},
     thread,
     time::Duration,
@@ -10,7 +10,10 @@ use tracing::info;
 #[cfg(not(windows))]
 use tracing::warn;
 
-use crate::models::{ActivityAppUsageDto, AppUsageSessionDto, AppUsageSummaryDto};
+use crate::{
+    input_monitor::InputMonitorEventDto,
+    models::{ActivityAppUsageDto, AppInputMinuteDto, AppUsageSessionDto, AppUsageSummaryDto},
+};
 
 const MAX_STORED_SESSIONS: usize = 512;
 
@@ -28,12 +31,25 @@ struct SessionRecord {
     snapshot: WindowSnapshot,
     started_at_ms: i64,
     ended_at_ms: i64,
+    key_presses: u32,
+    mouse_clicks: u32,
+    scroll_events: u32,
+}
+
+#[derive(Default, Clone)]
+struct InputMinuteRecord {
+    key_presses: u32,
+    mouse_clicks: u32,
+    mouse_moves: u32,
+    scroll_events: u32,
 }
 
 struct State {
+    date_today: chrono::NaiveDate,
     next_id: u64,
     current: Option<SessionRecord>,
     finished: VecDeque<SessionRecord>,
+    input_minutes: BTreeMap<u32, InputMinuteRecord>,
 }
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -41,9 +57,11 @@ static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| {
         Mutex::new(State {
+            date_today: Local::now().date_naive(),
             next_id: 1,
             current: None,
             finished: VecDeque::new(),
+            input_minutes: BTreeMap::new(),
         })
     })
 }
@@ -73,12 +91,24 @@ fn is_today(ts_ms: i64) -> bool {
         .unwrap_or(false)
 }
 
-fn record_snapshot(snapshot: Option<WindowSnapshot>) {
-    let now = Utc::now().timestamp_millis();
-    let Ok(mut state) = state().lock() else {
-        return;
-    };
+fn minute_of_day(ts_ms: i64) -> Option<u32> {
+    chrono::DateTime::from_timestamp_millis(ts_ms).map(|dt| {
+        let local = dt.with_timezone(&Local);
+        (local.hour() * 60 + local.minute()) as u32
+    })
+}
 
+fn ensure_today(state: &mut State) {
+    let today = Local::now().date_naive();
+    if state.date_today != today {
+        state.date_today = today;
+        state.current = None;
+        state.finished.clear();
+        state.input_minutes.clear();
+    }
+}
+
+fn transition_snapshot(state: &mut State, now: i64, snapshot: Option<WindowSnapshot>) {
     match (state.current.clone(), snapshot) {
         (Some(mut current), Some(next)) if same_window(&current.snapshot, &next) => {
             current.ended_at_ms = now;
@@ -97,6 +127,9 @@ fn record_snapshot(snapshot: Option<WindowSnapshot>) {
                 snapshot: next,
                 started_at_ms: now,
                 ended_at_ms: now,
+                key_presses: 0,
+                mouse_clicks: 0,
+                scroll_events: 0,
             });
         }
         (Some(mut current), None) => {
@@ -115,9 +148,84 @@ fn record_snapshot(snapshot: Option<WindowSnapshot>) {
                 snapshot: next,
                 started_at_ms: now,
                 ended_at_ms: now,
+                key_presses: 0,
+                mouse_clicks: 0,
+                scroll_events: 0,
             });
         }
         (None, None) => {}
+    }
+}
+
+fn record_snapshot(snapshot: Option<WindowSnapshot>) {
+    let now = Utc::now().timestamp_millis();
+    let Ok(mut state) = state().lock() else {
+        return;
+    };
+    ensure_today(&mut state);
+    transition_snapshot(&mut state, now, snapshot);
+}
+
+pub fn record_input_event(event: &InputMonitorEventDto) {
+    let now = event.timestamp;
+    let Ok(mut state) = state().lock() else {
+        return;
+    };
+    ensure_today(&mut state);
+
+    #[cfg(windows)]
+    {
+        let snapshot = unsafe { windows_impl::get_foreground_snapshot() };
+        transition_snapshot(&mut state, now, snapshot);
+    }
+
+    let minute = minute_of_day(now);
+    let has_current = state.current.is_some();
+    if !has_current {
+        return;
+    }
+
+    match (event.kind, event.action) {
+        ("keyboard", "press") => {
+            if let Some(current) = state.current.as_mut() {
+                current.ended_at_ms = now;
+                current.key_presses = current.key_presses.saturating_add(1);
+            }
+            if let Some(minute) = minute {
+                let bucket = state.input_minutes.entry(minute).or_default();
+                bucket.key_presses = bucket.key_presses.saturating_add(1);
+            }
+        }
+        ("mouse", "press") => {
+            if let Some(current) = state.current.as_mut() {
+                current.ended_at_ms = now;
+                current.mouse_clicks = current.mouse_clicks.saturating_add(1);
+            }
+            if let Some(minute) = minute {
+                let bucket = state.input_minutes.entry(minute).or_default();
+                bucket.mouse_clicks = bucket.mouse_clicks.saturating_add(1);
+            }
+        }
+        ("mouse", "move") => {
+            if let Some(current) = state.current.as_mut() {
+                current.ended_at_ms = now;
+            }
+            if let Some(minute) = minute {
+                let bucket = state.input_minutes.entry(minute).or_default();
+                bucket.mouse_moves = bucket.mouse_moves.saturating_add(1);
+            }
+        }
+        ("scroll", _) => {
+            if let Some(current) = state.current.as_mut() {
+                current.ended_at_ms = now;
+                current.scroll_events = current.scroll_events.saturating_add(1);
+            }
+            if let Some(minute) = minute {
+                let bucket = state.input_minutes.entry(minute).or_default();
+                bucket.scroll_events = bucket.scroll_events.saturating_add(1);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -131,6 +239,9 @@ fn to_session_dto(record: &SessionRecord) -> AppUsageSessionDto {
         started_at_ms: record.started_at_ms,
         ended_at_ms: record.ended_at_ms,
         duration_ms: (record.ended_at_ms - record.started_at_ms).max(0) as u64,
+        key_presses: record.key_presses,
+        mouse_clicks: record.mouse_clicks,
+        scroll_events: record.scroll_events,
     }
 }
 
@@ -160,9 +271,15 @@ pub fn get_activity_app_usage(limit: Option<u32>) -> ActivityAppUsageDto {
                 app_name: session.snapshot.app_name.clone(),
                 session_count: 0,
                 total_duration_ms: 0,
+                key_presses: 0,
+                mouse_clicks: 0,
+                scroll_events: 0,
             });
         entry.session_count += 1;
         entry.total_duration_ms += duration_ms;
+        entry.key_presses = entry.key_presses.saturating_add(session.key_presses);
+        entry.mouse_clicks = entry.mouse_clicks.saturating_add(session.mouse_clicks);
+        entry.scroll_events = entry.scroll_events.saturating_add(session.scroll_events);
     }
 
     let mut apps: Vec<AppUsageSummaryDto> = grouped.into_values().collect();
@@ -174,11 +291,27 @@ pub fn get_activity_app_usage(limit: Option<u32>) -> ActivityAppUsageDto {
         .take(session_limit)
         .map(|session| to_session_dto(&session))
         .collect();
+    let input_minutes = if let Ok(state) = state().lock() {
+        state
+            .input_minutes
+            .iter()
+            .map(|(minute_of_day, value)| AppInputMinuteDto {
+                minute_of_day: *minute_of_day,
+                key_presses: value.key_presses,
+                mouse_clicks: value.mouse_clicks,
+                mouse_moves: value.mouse_moves,
+                scroll_events: value.scroll_events,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     ActivityAppUsageDto {
         generated_at: Utc::now().to_rfc3339(),
         sessions: session_dtos,
         apps,
+        input_minutes,
     }
 }
 

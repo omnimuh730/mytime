@@ -101,6 +101,9 @@ export interface AppUsageSessionDto {
   startedAtMs: number;
   endedAtMs: number;
   durationMs: number;
+  keyPresses: number;
+  mouseClicks: number;
+  scrollEvents: number;
 }
 
 export interface AppUsageSummaryDto {
@@ -108,10 +111,22 @@ export interface AppUsageSummaryDto {
   appName: string;
   sessionCount: number;
   totalDurationMs: number;
+  keyPresses: number;
+  mouseClicks: number;
+  scrollEvents: number;
+}
+
+export interface AppInputMinuteDto {
+  minuteOfDay: number;
+  keyPresses: number;
+  mouseClicks: number;
+  mouseMoves: number;
+  scrollEvents: number;
 }
 
 export interface ActivityAppUsageDto {
   generatedAt: string;
   sessions: AppUsageSessionDto[];
   apps: AppUsageSummaryDto[];
+  inputMinutes: AppInputMinuteDto[];
 }

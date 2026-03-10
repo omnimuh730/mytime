@@ -124,6 +124,9 @@ pub struct AppUsageSessionDto {
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
     pub duration_ms: u64,
+    pub key_presses: u32,
+    pub mouse_clicks: u32,
+    pub scroll_events: u32,
 }
 
 #[derive(Clone, Serialize)]
@@ -133,6 +136,19 @@ pub struct AppUsageSummaryDto {
     pub app_name: String,
     pub session_count: u32,
     pub total_duration_ms: u64,
+    pub key_presses: u32,
+    pub mouse_clicks: u32,
+    pub scroll_events: u32,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInputMinuteDto {
+    pub minute_of_day: u32,
+    pub key_presses: u32,
+    pub mouse_clicks: u32,
+    pub mouse_moves: u32,
+    pub scroll_events: u32,
 }
 
 #[derive(Clone, Serialize)]
@@ -141,4 +157,5 @@ pub struct ActivityAppUsageDto {
     pub generated_at: String,
     pub sessions: Vec<AppUsageSessionDto>,
     pub apps: Vec<AppUsageSummaryDto>,
+    pub input_minutes: Vec<AppInputMinuteDto>,
 }

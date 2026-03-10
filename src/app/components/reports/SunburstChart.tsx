@@ -1,10 +1,11 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { PieChart, ArrowLeft, Settings2 } from "lucide-react";
 import {
   CategoryManagerModal,
   type AppEntry,
   type Category,
 } from "./CategoryManagerModal";
+import { getAppVisualMeta } from "../../activityAppUsage";
 
 // --- All known apps (flat list) ---
 const ALL_APPS: AppEntry[] = [
@@ -111,6 +112,36 @@ const DEFAULT_ASSIGNMENTS: Record<string, string> = {
   "app-settings": "cat-others",
 };
 
+function getCategoryIdForApp(app: AppEntry) {
+  const category = getAppVisualMeta(app.id, app.name).category;
+  switch (category) {
+    case "Development":
+      return "cat-dev";
+    case "Browsing":
+      return "cat-browse";
+    case "Communication":
+      return "cat-comm";
+    case "Design":
+      return "cat-design";
+    case "Productivity":
+      return "cat-productivity";
+    case "Media":
+      return "cat-media";
+    default:
+      return "cat-others";
+  }
+}
+
+function buildDefaultAssignments(apps: AppEntry[]) {
+  const merged: Record<string, string> = { ...DEFAULT_ASSIGNMENTS };
+  apps.forEach((app) => {
+    if (!(app.id in merged)) {
+      merged[app.id] = getCategoryIdForApp(app);
+    }
+  });
+  return merged;
+}
+
 // --- Types & Helpers ---
 
 interface SunburstNode {
@@ -165,10 +196,20 @@ interface SliceInfo {
 }
 
 function formatTime(minutes: number): string {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h === 0) return `${m}m`;
-  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+  const totalSeconds = Math.max(1, Math.round(minutes * 60));
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h === 0) {
+    return s === 0 ? `${m}m` : `${m}m ${s}s`;
+  }
+  if (s === 0) {
+    return `${h}h ${m}m`;
+  }
+  return `${h}h ${m}m ${s}s`;
 }
 
 interface SunburstChartProps {
@@ -185,8 +226,22 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
   const [categories, setCategories] =
     useState<Category[]>(DEFAULT_CATEGORIES);
   const [assignments, setAssignments] = useState<Record<string, string>>(
-    DEFAULT_ASSIGNMENTS
+    () => buildDefaultAssignments(resolvedApps)
   );
+
+  useEffect(() => {
+    setAssignments((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      resolvedApps.forEach((app) => {
+        if (!(app.id in next)) {
+          next[app.id] = getCategoryIdForApp(app);
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [resolvedApps]);
 
   // Build sunburst data from categories + assignments
   const sunburstData: SunburstNode[] = useMemo(() => {

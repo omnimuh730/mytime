@@ -1,5 +1,12 @@
 import type { AppEntry } from "./components/reports/CategoryManagerModal";
-import type { TimelineBlock } from "./components/timeline/timeline-data";
+import type {
+  AppInputMinuteDto,
+  APMDataPoint,
+  ActivityStatus,
+  NetworkDataPoint,
+  TimelineBlock,
+  TimelineMarker,
+} from "./components/timeline/timeline-data";
 import type {
   AppUsageSessionDto,
   AppUsageSummaryDto,
@@ -7,6 +14,7 @@ import type {
 
 const DAY_START_MIN = 7 * 60;
 const DAY_END_MIN = 21 * 60;
+const MIN_BLOCK_MINUTES = 1 / 60;
 
 const APP_META: Record<
   string,
@@ -67,7 +75,50 @@ export function getAppVisualMeta(appId: string, appName: string) {
 
 function minuteOfDay(tsMs: number) {
   const date = new Date(tsMs);
-  return date.getHours() * 60 + date.getMinutes();
+  return (
+    date.getHours() * 60 +
+    date.getMinutes() +
+    date.getSeconds() / 60 +
+    date.getMilliseconds() / 60000
+  );
+}
+
+function clampMinute(value: number) {
+  return Math.max(DAY_START_MIN, Math.min(value, DAY_END_MIN));
+}
+
+function durationMinutes(startMs: number, endMs: number) {
+  return Math.max(MIN_BLOCK_MINUTES, (endMs - startMs) / 60000);
+}
+
+function formatGapLabel(minutes: number) {
+  const totalSeconds = Math.max(1, Math.round(minutes * 60));
+  if (totalSeconds < 60) {
+    return `Idle for ${totalSeconds}s`;
+  }
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return secs === 0 ? `Idle for ${mins}m` : `Idle for ${mins}m ${secs}s`;
+}
+
+function bucketIntensity(bucket: AppInputMinuteDto) {
+  return Math.min(
+    100,
+    bucket.keyPresses * 12 +
+      bucket.mouseClicks * 10 +
+      bucket.scrollEvents * 8 +
+      bucket.mouseMoves * 3,
+  );
+}
+
+function bucketType(bucket: AppInputMinuteDto): APMDataPoint["type"] {
+  if (bucket.keyPresses >= bucket.mouseClicks + bucket.scrollEvents) {
+    return "typing";
+  }
+  if (bucket.mouseClicks + bucket.scrollEvents + bucket.mouseMoves > 0) {
+    return "mouse";
+  }
+  return "reading";
 }
 
 export function toTimelineBlocks(sessions: AppUsageSessionDto[]): TimelineBlock[] {
@@ -75,22 +126,24 @@ export function toTimelineBlocks(sessions: AppUsageSessionDto[]): TimelineBlock[
     .map((session) => {
       const meta = getAppVisualMeta(session.appId, session.appName);
       const startMin = minuteOfDay(session.startedAtMs);
-      const endMin = Math.max(startMin + 1, minuteOfDay(session.endedAtMs));
+      const preciseEndMin = startMin + durationMinutes(session.startedAtMs, session.endedAtMs);
+      const clampedStart = clampMinute(startMin);
+      const clampedEnd = Math.max(
+        clampedStart + MIN_BLOCK_MINUTES,
+        clampMinute(preciseEndMin),
+      );
 
       return {
         id: `session-${session.id}`,
         app: session.appName,
         title: session.title || session.appName,
-        startMin: Math.max(DAY_START_MIN, Math.min(startMin, DAY_END_MIN)),
-        endMin: Math.max(
-          Math.max(DAY_START_MIN, Math.min(startMin + 1, DAY_END_MIN)),
-          Math.max(DAY_START_MIN, Math.min(endMin, DAY_END_MIN)),
-        ),
+        startMin: clampedStart,
+        endMin: clampedEnd,
         color: meta.color,
         icon: meta.icon,
         category: meta.category,
-        keystrokes: 0,
-        clicks: 0,
+        keystrokes: session.keyPresses,
+        clicks: session.mouseClicks,
         downloadMB: 0,
         uploadMB: 0,
       };
@@ -106,7 +159,90 @@ export function toSunburstApps(apps: AppUsageSummaryDto[]): AppEntry[] {
       id: app.appId,
       name: app.appName,
       color: meta.color,
-      minutes: Math.max(1, Math.round(app.totalDurationMs / 60000)),
+      minutes: Math.max(MIN_BLOCK_MINUTES, app.totalDurationMs / 60000),
     };
   });
+}
+
+export function toActivityStatus(inputMinutes: AppInputMinuteDto[]): ActivityStatus[] {
+  if (inputMinutes.length === 0) {
+    return [{ startMin: DAY_START_MIN, endMin: DAY_END_MIN, status: "shutdown" }];
+  }
+
+  const activeMinutes = new Set(inputMinutes.map((bucket) => bucket.minuteOfDay));
+  const statuses: ActivityStatus[] = [];
+  const firstActive = Math.min(...activeMinutes);
+  const lastActive = Math.max(...activeMinutes);
+  let segmentStart = DAY_START_MIN;
+  let currentStatus: ActivityStatus["status"] =
+    segmentStart < firstActive ? "shutdown" : activeMinutes.has(segmentStart) ? "active" : "inactive";
+
+  for (let minute = DAY_START_MIN + 1; minute <= DAY_END_MIN; minute += 1) {
+    const nextStatus: ActivityStatus["status"] =
+      minute < firstActive || minute > lastActive
+        ? "shutdown"
+        : activeMinutes.has(minute)
+          ? "active"
+          : "inactive";
+
+    if (nextStatus !== currentStatus) {
+      statuses.push({
+        startMin: segmentStart,
+        endMin: minute,
+        status: currentStatus,
+      });
+      segmentStart = minute;
+      currentStatus = nextStatus;
+    }
+  }
+
+  statuses.push({
+    startMin: segmentStart,
+    endMin: DAY_END_MIN,
+    status: currentStatus,
+  });
+
+  return statuses.filter((seg) => seg.endMin > seg.startMin);
+}
+
+export function toTimelineMarkers(inputMinutes: AppInputMinuteDto[]): TimelineMarker[] {
+  const markers: TimelineMarker[] = [];
+  const sorted = [...inputMinutes].sort((a, b) => a.minuteOfDay - b.minuteOfDay);
+
+  for (let i = 1; i < sorted.length; i += 1) {
+    const prev = sorted[i - 1];
+    const next = sorted[i];
+    const gap = next.minuteOfDay - prev.minuteOfDay - 1;
+    if (gap >= 2) {
+      markers.push({
+        id: `idle-gap-${i}`,
+        minute: prev.minuteOfDay + 1,
+        type: "idle",
+        label: formatGapLabel(gap),
+        duration: gap,
+      });
+    }
+  }
+
+  return markers;
+}
+
+export function toApmData(inputMinutes: AppInputMinuteDto[]): APMDataPoint[] {
+  const byMinute = new Map(inputMinutes.map((bucket) => [bucket.minuteOfDay, bucket]));
+  return Array.from({ length: DAY_END_MIN - DAY_START_MIN }, (_, index) => {
+    const minute = DAY_START_MIN + index;
+    const bucket = byMinute.get(minute);
+    if (!bucket) {
+      return { minute, apm: 0, type: "reading" as const };
+    }
+    return {
+      minute,
+      apm: bucketIntensity(bucket),
+      type: bucketType(bucket),
+    };
+  });
+}
+
+export function toNetworkData(): NetworkDataPoint[] {
+  return [];
 }

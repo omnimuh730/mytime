@@ -1,10 +1,13 @@
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
+    io::Read,
+    net::UdpSocket,
+    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicI32, AtomicU64},
         mpsc::{self, Sender},
-        OnceLock,
+        Mutex, OnceLock,
     },
     thread,
 };
@@ -25,9 +28,83 @@ pub struct InputMonitorEventDto {
     pub timestamp: i64,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HelperInputMonitorEventDto {
+    kind: String,
+    action: String,
+    label: String,
+    state_key: Option<String>,
+    button: Option<String>,
+    direction: Option<String>,
+    x: Option<i32>,
+    y: Option<i32>,
+    timestamp: i64,
+}
+
+impl From<InputMonitorEventDto> for HelperInputMonitorEventDto {
+    fn from(value: InputMonitorEventDto) -> Self {
+        Self {
+            kind: value.kind.to_string(),
+            action: value.action.to_string(),
+            label: value.label,
+            state_key: value.state_key,
+            button: value.button.map(str::to_string),
+            direction: value.direction.map(str::to_string),
+            x: value.x,
+            y: value.y,
+            timestamp: value.timestamp,
+        }
+    }
+}
+
+impl TryFrom<HelperInputMonitorEventDto> for InputMonitorEventDto {
+    type Error = String;
+
+    fn try_from(value: HelperInputMonitorEventDto) -> Result<Self, Self::Error> {
+        fn map_static(input: &str) -> Result<&'static str, String> {
+            match input {
+                "keyboard" => Ok("keyboard"),
+                "mouse" => Ok("mouse"),
+                "scroll" => Ok("scroll"),
+                "press" => Ok("press"),
+                "release" => Ok("release"),
+                "move" => Ok("move"),
+                "wheel" => Ok("wheel"),
+                "left" => Ok("left"),
+                "right" => Ok("right"),
+                "middle" => Ok("middle"),
+                "up" => Ok("up"),
+                "down" => Ok("down"),
+                other => Err(format!("unexpected helper input token: {other}")),
+            }
+        }
+
+        Ok(Self {
+            kind: map_static(&value.kind)?,
+            action: map_static(&value.action)?,
+            label: value.label,
+            state_key: value.state_key,
+            button: match value.button {
+                Some(button) => Some(map_static(&button)?),
+                None => None,
+            },
+            direction: match value.direction {
+                Some(direction) => Some(map_static(&direction)?),
+                None => None,
+            },
+            x: value.x,
+            y: value.y,
+            timestamp: value.timestamp,
+        })
+    }
+}
+
 const INPUT_MONITOR_EVENT: &str = "input-monitor://event";
+const INPUT_HOOK_HELPER_ARG: &str = "--mytime-input-hook-helper";
 
 static EVENT_SENDER: OnceLock<Sender<InputMonitorEventDto>> = OnceLock::new();
+static HELPER_CHILD: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
 static LAST_MOVE_TICK: AtomicU64 = AtomicU64::new(0);
 static LAST_MOVE_X: AtomicI32 = AtomicI32::new(i32::MIN);
 static LAST_MOVE_Y: AtomicI32 = AtomicI32::new(i32::MIN);
@@ -39,6 +116,19 @@ pub fn start_global_input_monitor<R: Runtime>(_app: AppHandle<R>) {
 
 #[cfg(windows)]
 pub fn start_global_input_monitor<R: Runtime>(app: AppHandle<R>) {
+    crate::input_aggregator::init();
+
+    if let Err(error) = start_helper_input_monitor(app.clone()) {
+        warn!(?error, "failed to start helper input monitor, falling back to in-process hook");
+        start_inprocess_global_input_monitor(app);
+        return;
+    }
+
+    info!("started global input monitor via helper process");
+}
+
+#[cfg(windows)]
+fn start_inprocess_global_input_monitor<R: Runtime>(app: AppHandle<R>) {
     let (tx, rx) = mpsc::channel::<InputMonitorEventDto>();
 
     if EVENT_SENDER.set(tx).is_err() {
@@ -46,12 +136,11 @@ pub fn start_global_input_monitor<R: Runtime>(app: AppHandle<R>) {
         return;
     }
 
-    crate::input_aggregator::init();
-
     let emitter_app = app.clone();
     thread::spawn(move || {
         for event in rx {
             crate::input_aggregator::record(&event);
+            crate::app_usage_monitor::record_input_event(&event);
             if let Err(error) = emitter_app.emit(INPUT_MONITOR_EVENT, event) {
                 error!(?error, "failed to emit input monitor event");
             }
@@ -68,6 +157,107 @@ pub fn start_global_input_monitor<R: Runtime>(app: AppHandle<R>) {
     });
 
     info!("started global input monitor");
+}
+
+#[cfg(windows)]
+fn start_helper_input_monitor<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+    let port = socket.local_addr().map_err(|error| error.to_string())?.port();
+
+    let child = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+        .arg(INPUT_HOOK_HELPER_ARG)
+        .arg(port.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+
+    // Keep the child handle alive so the stdin pipe remains open; helper exits when this process ends.
+    let store = HELPER_CHILD.get_or_init(|| Mutex::new(None));
+    let Ok(mut slot) = store.lock() else {
+        return Err("failed to store helper child".to_string());
+    };
+    *slot = Some(child);
+
+    thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        loop {
+            match socket.recv_from(&mut buffer) {
+                Ok((len, _)) => match serde_json::from_slice::<HelperInputMonitorEventDto>(
+                    &buffer[..len],
+                ) {
+                    Ok(payload) => match InputMonitorEventDto::try_from(payload) {
+                        Ok(event) => {
+                            crate::input_aggregator::record(&event);
+                            crate::app_usage_monitor::record_input_event(&event);
+                            if let Err(error) = app.emit(INPUT_MONITOR_EVENT, event) {
+                                error!(?error, "failed to emit helper input monitor event");
+                            }
+                        }
+                        Err(error) => {
+                            error!(%error, "failed to map helper input event");
+                        }
+                    },
+                    Err(error) => {
+                        error!(?error, "failed to decode helper input event");
+                    }
+                },
+                Err(error) => {
+                    error!(?error, "input monitor helper socket receive failed");
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn run_input_hook_helper(port: u16) -> Result<(), String> {
+    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+    socket
+        .connect(("127.0.0.1", port))
+        .map_err(|error| error.to_string())?;
+
+    let (tx, rx) = mpsc::channel::<InputMonitorEventDto>();
+    if EVENT_SENDER.set(tx).is_err() {
+        return Err("input monitor helper already initialized".to_string());
+    }
+
+    thread::spawn(move || {
+        for event in rx {
+            match serde_json::to_vec(&HelperInputMonitorEventDto::from(event)) {
+                Ok(payload) => {
+                    if let Err(error) = socket.send(&payload) {
+                        error!(?error, "failed to forward helper input event");
+                    }
+                }
+                Err(error) => {
+                    error!(?error, "failed to serialize helper input event");
+                }
+            }
+        }
+    });
+
+    thread::spawn(|| {
+        let mut stdin = std::io::stdin();
+        let mut buf = [0u8; 1];
+        loop {
+            match stdin.read(&mut buf) {
+                Ok(0) | Err(_) => std::process::exit(0),
+                Ok(_) => {}
+            }
+        }
+    });
+
+    unsafe { windows_impl::run_global_hook_loop().map_err(|error| error.to_string()) }
+}
+
+#[cfg(not(windows))]
+pub fn run_input_hook_helper(_port: u16) -> Result<(), String> {
+    Err("input hook helper is only implemented on Windows".to_string())
 }
 
 #[cfg(windows)]
@@ -109,8 +299,8 @@ mod windows_impl {
     use std::fmt;
     use std::sync::atomic::Ordering;
     use windows::Win32::{
-        Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
-        System::{LibraryLoader::GetModuleHandleW, SystemInformation::GetTickCount64},
+        Foundation::{LPARAM, LRESULT, WPARAM},
+        System::SystemInformation::GetTickCount64,
         UI::WindowsAndMessaging::{
             CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
             UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL,
@@ -121,17 +311,11 @@ mod windows_impl {
     };
 
     pub unsafe fn run_global_hook_loop() -> Result<(), HookInstallError> {
-        let module = GetModuleHandleW(None).map_err(HookInstallError::ModuleHandle)?;
-        let keyboard_hook = SetWindowsHookExW(
-            WH_KEYBOARD_LL,
-            Some(keyboard_proc),
-            Some(HINSTANCE(module.0)),
-            0,
-        )
-        .map_err(HookInstallError::KeyboardHook)?;
-        let mouse_hook =
-            SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(HINSTANCE(module.0)), 0)
-                .map_err(HookInstallError::MouseHook)?;
+        let keyboard_hook =
+            SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0)
+                .map_err(HookInstallError::KeyboardHook)?;
+        let mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0)
+            .map_err(HookInstallError::MouseHook)?;
 
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).into() {
@@ -443,7 +627,6 @@ mod windows_impl {
 
     #[derive(Debug)]
     pub enum HookInstallError {
-        ModuleHandle(windows::core::Error),
         KeyboardHook(windows::core::Error),
         MouseHook(windows::core::Error),
     }
@@ -451,7 +634,6 @@ mod windows_impl {
     impl fmt::Display for HookInstallError {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                Self::ModuleHandle(error) => write!(f, "failed to resolve module handle: {error}"),
                 Self::KeyboardHook(error) => write!(f, "failed to install keyboard hook: {error}"),
                 Self::MouseHook(error) => write!(f, "failed to install mouse hook: {error}"),
             }

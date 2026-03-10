@@ -3,6 +3,10 @@ import { TimelineToolbar } from "./TimelineToolbar";
 import { TimelineTracks } from "./TimelineTracks";
 import { AppUsageList } from "./AppUsageList";
 import {
+  type APMDataPoint,
+  type ActivityStatus,
+  type NetworkDataPoint,
+  type TimelineMarker,
   type TimelineBlock,
   generateTimelineBlocks,
   generateNetworkData,
@@ -13,11 +17,19 @@ import {
 
 interface TimelineEditorProps {
   blocks?: TimelineBlock[];
+  networkData?: NetworkDataPoint[];
+  apmData?: APMDataPoint[];
+  markers?: TimelineMarker[];
+  activityStatus?: ActivityStatus[];
   isLoading?: boolean;
 }
 
 export function TimelineEditor({
   blocks: externalBlocks,
+  networkData: externalNetworkData,
+  apmData: externalApmData,
+  markers: externalMarkers,
+  activityStatus: externalActivityStatus,
   isLoading = false,
 }: TimelineEditorProps) {
   const [blocks, setBlocks] = useState<TimelineBlock[]>(() =>
@@ -27,17 +39,29 @@ export function TimelineEditor({
   const [visibleTracks, setVisibleTracks] = useState({
     status: true,
     windows: true,
-    network: true,
-    apm: true,
+    network: externalNetworkData === undefined ? true : externalNetworkData.length > 0,
+    apm: externalApmData === undefined ? true : externalApmData.length > 0,
   });
   const [selectedBlockIds, setSelectedBlockIds] = useState<Set<string>>(
     new Set()
   );
 
-  const networkData = useMemo(() => generateNetworkData(), []);
-  const apmData = useMemo(() => generateAPMData(), []);
-  const markers = useMemo(() => generateMarkers(), []);
-  const activityStatus = useMemo(() => generateActivityStatus(), []);
+  const networkData = useMemo(
+    () => externalNetworkData ?? generateNetworkData(),
+    [externalNetworkData],
+  );
+  const apmData = useMemo(
+    () => externalApmData ?? generateAPMData(),
+    [externalApmData],
+  );
+  const markers = useMemo(
+    () => externalMarkers ?? generateMarkers(),
+    [externalMarkers],
+  );
+  const activityStatus = useMemo(
+    () => externalActivityStatus ?? generateActivityStatus(),
+    [externalActivityStatus],
+  );
   const resolvedBlocks = externalBlocks ?? blocks;
 
   const handleSelectBlock = useCallback(

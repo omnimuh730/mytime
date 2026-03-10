@@ -40,7 +40,14 @@ import { NetworkQuotaBurndown } from "./components/network/NetworkQuotaBurndown"
 import { LivePacketMatrix } from "./components/network/LivePacketMatrix";
 import { SunburstChart } from "./components/reports/SunburstChart";
 import { HelpPage } from "./components/HelpPage";
-import { toSunburstApps, toTimelineBlocks } from "./activityAppUsage";
+import {
+  toActivityStatus,
+  toApmData,
+  toNetworkData,
+  toSunburstApps,
+  toTimelineBlocks,
+  toTimelineMarkers,
+} from "./activityAppUsage";
 import { useActivityAppUsage } from "./hooks/useActivityAppUsage";
 import { useDashboardSummary } from "./hooks/useDashboardSummary";
 import { useAppStatus } from "./hooks/useAppStatus";
@@ -308,6 +315,19 @@ function ActivityView() {
     () => toTimelineBlocks(appUsageData?.sessions ?? []),
     [appUsageData],
   );
+  const realActivityStatus = useMemo(
+    () => toActivityStatus(appUsageData?.inputMinutes ?? []),
+    [appUsageData],
+  );
+  const realTimelineMarkers = useMemo(
+    () => toTimelineMarkers(appUsageData?.inputMinutes ?? []),
+    [appUsageData],
+  );
+  const realApmData = useMemo(
+    () => toApmData(appUsageData?.inputMinutes ?? []),
+    [appUsageData],
+  );
+  const realNetworkData = useMemo(() => toNetworkData(), []);
   const realSunburstApps = useMemo(
     () => toSunburstApps(appUsageData?.apps ?? []),
     [appUsageData],
@@ -370,7 +390,14 @@ function ActivityView() {
 
       {/* Multi-Track Timeline Editor (timebar + tracks + minimap) */}
       <div className="min-h-[320px]">
-        <TimelineEditor blocks={realTimelineBlocks} isLoading={isAppUsageLoading} />
+        <TimelineEditor
+          blocks={realTimelineBlocks}
+          activityStatus={realActivityStatus}
+          markers={realTimelineMarkers}
+          apmData={realApmData}
+          networkData={realNetworkData}
+          isLoading={isAppUsageLoading}
+        />
       </div>
 
       {/* App Usage Sunburst + Live Activity Feed */}

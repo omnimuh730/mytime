@@ -75,3 +75,7 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+pub fn run_input_hook_helper(port: u16) -> Result<(), String> {
+    input_monitor::run_input_hook_helper(port)
+}

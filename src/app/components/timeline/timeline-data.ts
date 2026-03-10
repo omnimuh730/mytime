@@ -363,17 +363,27 @@ export function generateActivityStatus(): ActivityStatus[] {
 
 // Helper
 export function formatMinutes(mins: number): string {
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
+  const totalSeconds = Math.max(0, Math.round(mins * 60));
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
   const ampm = h >= 12 ? "PM" : "AM";
   const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
-  return `${h12}:${m.toString().padStart(2, "0")} ${ampm}`;
+  if (s === 0) {
+    return `${h12}:${m.toString().padStart(2, "0")} ${ampm}`;
+  }
+  return `${h12}:${m.toString().padStart(2, "0")}:${s
+    .toString()
+    .padStart(2, "0")} ${ampm}`;
 }
 
 export function formatDuration(mins: number): string {
-  if (mins < 1) return "<1m";
-  const h = Math.floor(mins / 60);
-  const m = Math.round(mins % 60);
-  if (h === 0) return `${m}m`;
-  return `${h}h ${m}m`;
+  const totalSeconds = Math.max(1, Math.round(mins * 60));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h === 0) return s === 0 ? `${m}m` : `${m}m ${s}s`;
+  if (s === 0) return `${h}h ${m}m`;
+  return `${h}h ${m}m ${s}s`;
 }
