@@ -20,11 +20,12 @@ export function NetworkStatus({ overview = null }: Props) {
   const uptime = overview?.status.uptimePercent ?? 0;
 
   useEffect(() => {
+    if (overview === null) return;
     setPingHistory((prev) => {
       tickRef.current += 1;
       const next = [
         ...prev.slice(-(59)),
-        { time: tickRef.current, latency: currentLatency || Math.random() * 2 },
+        { time: tickRef.current, latency: currentLatency },
       ];
       return next;
     });

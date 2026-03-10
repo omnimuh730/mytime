@@ -107,7 +107,7 @@ export function DataVelocityHeatmap({ downloadBytesToday, uploadBytesToday }: Pr
             <Calendar className="w-5 h-5 text-primary" />
             Data Velocity Heatmap
           </h3>
-          <p className="text-muted-foreground text-xs mt-1">Daily network usage — today tracked live, past days need persistence</p>
+          <p className="text-muted-foreground text-xs mt-1">Daily network usage — today tracked live from interface counters</p>
         </div>
         <div className="flex items-center gap-3 sm:gap-4 text-xs">
           <div className="flex items-center gap-1.5">

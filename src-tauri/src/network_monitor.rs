@@ -1,6 +1,13 @@
 //! Real-time network monitoring using Windows IP Helper APIs.
-//! Polls TCP/UDP connection tables, tracks per-process bandwidth,
-//! aggregates domain/connection stats, and emits snapshots to the frontend.
+//!
+//! **Data sources (all real, no estimation):**
+//! - `GetIfTable2` → system-wide InOctets/OutOctets per network interface
+//!   (accurate total bandwidth, no elevation needed)
+//! - `GetExtendedTcpTable` / `GetExtendedUdpTable` → enumerate all open connections with PIDs
+//! - `GetPerTcpConnectionEStats` + `SetPerTcpConnectionEStats` → real per-TCP-connection
+//!   DataBytesIn/DataBytesOut (requires admin; the app already runs elevated for input hooks)
+//! - For UDP (which has no per-connection byte counters), bandwidth is proportionally
+//!   allocated from the interface-level residual.
 
 use std::{
     collections::HashMap,
@@ -10,24 +17,57 @@ use std::{
 };
 
 use chrono::{Local, Utc};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::models::*;
 
-// ── Windows-specific imports ──
 #[cfg(windows)]
 use windows::Win32::NetworkManagement::IpHelper::{
-    GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP_STATE_ESTAB,
-    MIB_TCPTABLE_OWNER_PID,
-    MIB_UDPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
+    GetExtendedTcpTable, GetExtendedUdpTable, GetIfTable2, FreeMibTable,
+    GetPerTcpConnectionEStats, SetPerTcpConnectionEStats,
+    MIB_TCPTABLE_OWNER_PID, MIB_TCPROW_OWNER_PID,
+    MIB_UDPTABLE_OWNER_PID, MIB_TCP_STATE_ESTAB,
+    TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
+    TCP_ESTATS_TYPE,
 };
 #[cfg(windows)]
 use windows::Win32::Networking::WinSock::AF_INET;
+#[cfg(windows)]
+use windows::Win32::NetworkManagement::Ndis::IF_OPER_STATUS;
 
 static STATE: OnceLock<Mutex<NetState>> = OnceLock::new();
 
 const POLL_INTERVAL_MS: u64 = 1000;
 const SPEED_HISTORY_LEN: usize = 120;
+
+// ── C-layout struct matching TCP_ESTATS_DATA_RW_v0 ──
+// EnableCollection: BOOLEAN (1 byte, but padded to 4 by MSVC)
+#[cfg(windows)]
+#[repr(C)]
+struct TcpEstatsDataRw {
+    enable_collection: i32, // BOOLEAN stored as i32 for ABI compat
+}
+
+// ── C-layout struct matching TCP_ESTATS_DATA_ROD_v0 ──
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct TcpEstatsDataRod {
+    data_bytes_out: u64,
+    data_segs_out: u64,
+    data_bytes_in: u64,
+    data_segs_in: u64,
+    segs_out: u64,
+    segs_in: u64,
+    soft_errors: u32,
+    soft_error_reason: u32,
+    snd_una: u32,
+    snd_nxt: u32,
+    snd_max: u32,
+    thru_bytes_acked: u64,
+    rcv_nxt: u32,
+    thru_bytes_received: u64,
+}
 
 #[derive(Clone)]
 struct TrackedConn {
@@ -39,6 +79,7 @@ struct TrackedConn {
     remote_addr: u32,
     remote_port: u16,
     state: String,
+    #[allow(dead_code)]
     first_seen: Instant,
     last_seen: Instant,
     download_bytes: u64,
@@ -72,8 +113,6 @@ struct NetState {
     remote_addrs: std::collections::HashSet<String>,
     download_bytes_today: u64,
     upload_bytes_today: u64,
-    prev_total_download: u64,
-    prev_total_upload: u64,
     speed_history: Vec<SpeedSample>,
     current_download_bps: f64,
     current_upload_bps: f64,
@@ -82,6 +121,14 @@ struct NetState {
     latency_ms: u32,
     jitter_ms: f64,
     is_online: bool,
+    estats_available: bool,
+    prev_if_in_octets: u64,
+    prev_if_out_octets: u64,
+    prev_estats_dl: u64,
+    prev_estats_ul: u64,
+    cached_gateway: String,
+    cached_dns: String,
+    cached_conn_type: String,
 }
 
 impl NetState {
@@ -92,8 +139,6 @@ impl NetState {
             remote_addrs: std::collections::HashSet::new(),
             download_bytes_today: 0,
             upload_bytes_today: 0,
-            prev_total_download: 0,
-            prev_total_upload: 0,
             speed_history: Vec::with_capacity(SPEED_HISTORY_LEN),
             current_download_bps: 0.0,
             current_upload_bps: 0.0,
@@ -102,6 +147,14 @@ impl NetState {
             latency_ms: 0,
             jitter_ms: 0.0,
             is_online: true,
+            estats_available: false,
+            prev_if_in_octets: 0,
+            prev_if_out_octets: 0,
+            prev_estats_dl: 0,
+            prev_estats_ul: 0,
+            cached_gateway: "—".into(),
+            cached_dns: "—".into(),
+            cached_conn_type: "Unknown".into(),
         }
     }
 
@@ -113,9 +166,11 @@ impl NetState {
             self.remote_addrs.clear();
             self.download_bytes_today = 0;
             self.upload_bytes_today = 0;
-            self.prev_total_download = 0;
-            self.prev_total_upload = 0;
             self.speed_history.clear();
+            self.prev_if_in_octets = 0;
+            self.prev_if_out_octets = 0;
+            self.prev_estats_dl = 0;
+            self.prev_estats_ul = 0;
             self.today_date = now;
         }
     }
@@ -126,8 +181,7 @@ fn conn_key(pid: u32, proto: &str, local_port: u16, remote_addr: u32, remote_por
 }
 
 fn ipv4_to_string(raw: u32) -> String {
-    let addr = Ipv4Addr::from(u32::from_be(raw));
-    addr.to_string()
+    Ipv4Addr::from(u32::from_be(raw)).to_string()
 }
 
 fn get_process_info(pid: u32) -> (String, Option<String>) {
@@ -213,6 +267,126 @@ fn determine_status(total_bytes: u64) -> &'static str {
     else { "normal" }
 }
 
+// ── Real interface-level byte counters ──
+
+#[cfg(windows)]
+fn read_interface_totals() -> (u64, u64) {
+    let mut table_ptr: *mut windows::Win32::NetworkManagement::IpHelper::MIB_IF_TABLE2 = std::ptr::null_mut();
+    let ret = unsafe { GetIfTable2(&mut table_ptr) };
+    if ret.0 != 0 || table_ptr.is_null() {
+        return (0, 0);
+    }
+
+    let mut total_in: u64 = 0;
+    let mut total_out: u64 = 0;
+
+    unsafe {
+        let table = &*table_ptr;
+        let count = table.NumEntries as usize;
+        let rows = std::slice::from_raw_parts(table.Table.as_ptr(), count);
+
+        for row in rows {
+            if row.OperStatus != IF_OPER_STATUS(1) { continue; } // only UP interfaces
+            // Only count physical/real network adapters:
+            //   6  = ethernetCsmacd (Ethernet)
+            //  71  = ieee80211 (Wi-Fi)
+            // Skip loopback(24), tunnel(131), softwareLoopback(24), ppp(23),
+            //   propVirtual(53), and other virtual types to avoid double-counting.
+            if row.Type != 6 && row.Type != 71 {
+                continue;
+            }
+            total_in += row.InOctets;
+            total_out += row.OutOctets;
+        }
+
+        FreeMibTable(table_ptr as *const _);
+    }
+
+    (total_in, total_out)
+}
+
+#[cfg(not(windows))]
+fn read_interface_totals() -> (u64, u64) {
+    (0, 0)
+}
+
+// ── Per-TCP-connection real byte counters via Extended Statistics ──
+
+#[cfg(windows)]
+fn enable_estats_for_row(row: &MIB_TCPROW_OWNER_PID) -> bool {
+    let rw = TcpEstatsDataRw { enable_collection: 1 };
+    let rw_bytes = unsafe {
+        std::slice::from_raw_parts(
+            &rw as *const TcpEstatsDataRw as *const u8,
+            std::mem::size_of::<TcpEstatsDataRw>(),
+        )
+    };
+
+    // Build a MIB_TCPROW_LH from the OWNER_PID row
+    let tcp_row = windows::Win32::NetworkManagement::IpHelper::MIB_TCPROW_LH {
+        Anonymous: windows::Win32::NetworkManagement::IpHelper::MIB_TCPROW_LH_0 {
+            dwState: row.dwState,
+        },
+        dwLocalAddr: row.dwLocalAddr,
+        dwLocalPort: row.dwLocalPort,
+        dwRemoteAddr: row.dwRemoteAddr,
+        dwRemotePort: row.dwRemotePort,
+    };
+
+    let ret = unsafe {
+        SetPerTcpConnectionEStats(
+            &tcp_row,
+            TCP_ESTATS_TYPE(0), // TcpConnectionEstatsData = 0
+            rw_bytes,
+            0,
+            0,
+        )
+    };
+    ret == 0
+}
+
+#[cfg(windows)]
+fn read_estats_for_row(row: &MIB_TCPROW_OWNER_PID) -> Option<(u64, u64)> {
+    let tcp_row = windows::Win32::NetworkManagement::IpHelper::MIB_TCPROW_LH {
+        Anonymous: windows::Win32::NetworkManagement::IpHelper::MIB_TCPROW_LH_0 {
+            dwState: row.dwState,
+        },
+        dwLocalAddr: row.dwLocalAddr,
+        dwLocalPort: row.dwLocalPort,
+        dwRemoteAddr: row.dwRemoteAddr,
+        dwRemotePort: row.dwRemotePort,
+    };
+
+    let mut rod = TcpEstatsDataRod::default();
+    let rod_size = std::mem::size_of::<TcpEstatsDataRod>();
+
+    let rod_bytes = unsafe {
+        std::slice::from_raw_parts_mut(
+            &mut rod as *mut TcpEstatsDataRod as *mut u8,
+            rod_size,
+        )
+    };
+
+    let ret = unsafe {
+        GetPerTcpConnectionEStats(
+            &tcp_row,
+            TCP_ESTATS_TYPE(0), // TcpConnectionEstatsData
+            None,
+            0,
+            None,
+            0,
+            Some(rod_bytes),
+            0,
+        )
+    };
+
+    if ret == 0 {
+        Some((rod.data_bytes_in, rod.data_bytes_out))
+    } else {
+        None
+    }
+}
+
 // ── Polling logic (Windows) ──
 
 #[cfg(windows)]
@@ -220,7 +394,10 @@ fn poll_connections(state: &mut NetState) {
     let now = Instant::now();
     let mut seen_keys = std::collections::HashSet::new();
 
-    // TCP connections
+    // ── 1. Read real interface-level totals ──
+    let (if_in, if_out) = read_interface_totals();
+
+    // ── 2. Enumerate TCP connections and read real per-connection bytes ──
     let mut tcp_size: u32 = 0;
     unsafe {
         let _ = GetExtendedTcpTable(
@@ -270,6 +447,30 @@ fn poll_connections(state: &mut NetState) {
                     state.remote_addrs.insert(remote_str);
                 }
 
+                let is_established = tcp_state == MIB_TCP_STATE_ESTAB.0 as u32;
+                let is_new = !state.connections.contains_key(&key);
+
+                // Try to read real per-connection bytes via extended statistics
+                let (real_dl, real_ul) = if is_established && state.estats_available {
+                    if is_new {
+                        enable_estats_for_row(row);
+                    }
+                    match read_estats_for_row(row) {
+                        Some((bytes_in, bytes_out)) => (bytes_in, bytes_out),
+                        None => {
+                            if is_new && state.estats_available {
+                                // First failure — maybe not admin. Warn once and disable.
+                                state.estats_available = false;
+                                warn!("GetPerTcpConnectionEStats unavailable (needs admin); \
+                                       falling back to interface-level byte distribution");
+                            }
+                            (0, 0)
+                        }
+                    }
+                } else {
+                    (0, 0)
+                };
+
                 let entry = state.connections.entry(key).or_insert_with(|| {
                     let (name, _path) = get_process_info(pid);
                     TrackedConn {
@@ -290,22 +491,15 @@ fn poll_connections(state: &mut NetState) {
                 entry.last_seen = now;
                 entry.state = conn_state_str(tcp_state).to_string();
 
-                // Estimate bandwidth based on connection duration & state
-                if tcp_state == MIB_TCP_STATE_ESTAB.0 as u32 {
-                    let elapsed_s = entry.first_seen.elapsed().as_secs_f64().max(0.001);
-                    let base_rate = if remote_port == 443 || remote_port == 80 {
-                        2000.0 + (pid as f64 % 5000.0)
-                    } else {
-                        500.0 + (pid as f64 % 1500.0)
-                    };
-                    entry.download_bytes = (base_rate * elapsed_s) as u64;
-                    entry.upload_bytes = (base_rate * 0.3 * elapsed_s) as u64;
+                if state.estats_available && is_established {
+                    entry.download_bytes = real_dl;
+                    entry.upload_bytes = real_ul;
                 }
             }
         }
     }
 
-    // UDP endpoints
+    // ── 3. Enumerate UDP endpoints ──
     let mut udp_size: u32 = 0;
     unsafe {
         let _ = GetExtendedUdpTable(
@@ -368,19 +562,85 @@ fn poll_connections(state: &mut NetState) {
         }
     }
 
-    // Remove stale connections (not seen for 30s)
+    // ── 4. Remove stale connections ──
     state.connections.retain(|k, c| {
         seen_keys.contains(k) || now.duration_since(c.last_seen) < Duration::from_secs(30)
     });
 
-    // Rebuild process stats — merge by process name so duplicates (same exe, different PIDs) are combined
+    // ── 5. Compute real interface-level deltas ──
+    let mut dl_delta: u64 = 0;
+    let mut ul_delta: u64 = 0;
+    let has_prev = state.prev_if_in_octets > 0;
+
+    if has_prev {
+        let raw_dl = if_in.saturating_sub(state.prev_if_in_octets);
+        let raw_ul = if_out.saturating_sub(state.prev_if_out_octets);
+        // Guard against counter wrap or implausible jumps
+        if raw_dl < 10_000_000_000 {
+            dl_delta = raw_dl;
+            ul_delta = raw_ul;
+        }
+    }
+
+    // ── 6. Distribute interface bytes to connections ──
+    // When estats gives us real per-TCP-connection bytes, sum those and distribute
+    // the remaining interface bytes (UDP + non-estats traffic) across other connections.
+    // When estats is unavailable, distribute ALL interface bytes across all active connections.
+    if has_prev && (dl_delta > 0 || ul_delta > 0) {
+        let mut estats_dl_total: u64 = 0;
+        let mut estats_ul_total: u64 = 0;
+
+        if state.estats_available {
+            // Sum bytes from connections that already have estats data
+            for conn in state.connections.values() {
+                if conn.protocol == "TCP" {
+                    estats_dl_total += conn.download_bytes;
+                    estats_ul_total += conn.upload_bytes;
+                }
+            }
+        }
+
+        // Residual = interface delta minus what estats accounted for
+        let residual_dl = dl_delta.saturating_sub(estats_dl_total.saturating_sub(state.prev_estats_dl));
+        let residual_ul = ul_delta.saturating_sub(estats_ul_total.saturating_sub(state.prev_estats_ul));
+
+        // Collect all connections that need byte distribution (no estats data)
+        let needs_bytes: Vec<String> = state.connections.iter()
+            .filter(|(_, c)| {
+                if state.estats_available && c.protocol == "TCP" && c.state == "ESTABLISHED" {
+                    false // already has estats bytes
+                } else if c.protocol == "UDP" {
+                    true // UDP endpoints always get a share
+                } else {
+                    // Active TCP: any state except LISTEN, CLOSED, TIME_WAIT
+                    c.state != "LISTEN" && c.state != "CLOSED"
+                        && c.state != "TIME_WAIT"
+                }
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        if !needs_bytes.is_empty() {
+            let n = needs_bytes.len() as u64;
+            let per_dl = residual_dl / n;
+            let per_ul = residual_ul / n;
+            for key in &needs_bytes {
+                if let Some(conn) = state.connections.get_mut(key) {
+                    conn.download_bytes += per_dl;
+                    conn.upload_bytes += per_ul;
+                }
+            }
+        }
+
+        state.prev_estats_dl = estats_dl_total;
+        state.prev_estats_ul = estats_ul_total;
+    }
+
+    // ── 7. Rebuild per-process stats (merged by name) ──
     state.process_stats.clear();
-    // Collect exe paths per PID for icon resolution
     let mut pid_paths: HashMap<u32, Option<String>> = HashMap::new();
     for conn in state.connections.values() {
-        pid_paths.entry(conn.pid).or_insert_with(|| {
-            get_process_info(conn.pid).1
-        });
+        pid_paths.entry(conn.pid).or_insert_with(|| get_process_info(conn.pid).1);
     }
 
     for conn in state.connections.values() {
@@ -408,14 +668,10 @@ fn poll_connections(state: &mut NetState) {
         entry.connection_count += 1;
     }
 
-    // Compute total bandwidth & speed delta
-    let total_dl: u64 = state.process_stats.values().map(|p| p.download_bytes).sum();
-    let total_ul: u64 = state.process_stats.values().map(|p| p.upload_bytes).sum();
+    // ── 8. Compute speed delta from real interface counters ──
+    if has_prev {
+        let dt = state.last_poll.map(|lp| now.duration_since(lp).as_secs_f64()).unwrap_or(1.0).max(0.001);
 
-    if let Some(last) = state.last_poll {
-        let dt = now.duration_since(last).as_secs_f64().max(0.001);
-        let dl_delta = total_dl.saturating_sub(state.prev_total_download);
-        let ul_delta = total_ul.saturating_sub(state.prev_total_upload);
         state.current_download_bps = (dl_delta as f64 * 8.0) / dt;
         state.current_upload_bps = (ul_delta as f64 * 8.0) / dt;
         state.download_bytes_today += dl_delta;
@@ -430,7 +686,6 @@ fn poll_connections(state: &mut NetState) {
             state.speed_history.remove(0);
         }
 
-        // Update peak per process
         for ps in state.process_stats.values_mut() {
             let bps = ((ps.download_bytes + ps.upload_bytes) as f64 * 8.0) / dt;
             if bps > ps.peak_bps {
@@ -439,10 +694,9 @@ fn poll_connections(state: &mut NetState) {
         }
     }
 
-    state.prev_total_download = total_dl;
-    state.prev_total_upload = total_ul;
+    state.prev_if_in_octets = if_in;
+    state.prev_if_out_octets = if_out;
     state.last_poll = Some(now);
-
 }
 
 #[cfg(not(windows))]
@@ -450,51 +704,64 @@ fn poll_connections(_state: &mut NetState) {}
 
 // ── Public API ──
 
-fn latency_check(state: &mut NetState) {
-    let query_start = Instant::now();
-    let result = std::net::TcpStream::connect_timeout(
-        &"8.8.8.8:53".parse().unwrap(),
-        Duration::from_millis(2000),
-    );
-    let elapsed = query_start.elapsed().as_millis() as u32;
 
-    match result {
-        Ok(_stream) => {
-            let prev = state.latency_ms;
-            state.latency_ms = elapsed;
-            state.jitter_ms = (elapsed as f64 - prev as f64).abs();
-            state.is_online = true;
-        }
-        Err(_) => {
-            state.latency_ms = 0;
-            state.is_online = false;
-        }
-    }
-}
+
 
 pub fn start_network_monitor() {
     let _ = STATE.set(Mutex::new(NetState::new()));
 
     std::thread::spawn(|| {
         info!("network_monitor: polling thread started");
+        let mut detect_counter: u32 = 0;
         loop {
+            // Detect system network info outside the lock (PowerShell is slow)
+            let detect_info = if detect_counter == 0 {
+                let gw = detect_gateway();
+                let dns = detect_dns_server();
+                let ct = detect_connection_type();
+                Some((gw, dns, ct))
+            } else {
+                None
+            };
+
             if let Some(mtx) = STATE.get() {
                 if let Ok(mut state) = mtx.lock() {
                     state.ensure_today();
+                    if let Some((gw, dns, ct)) = detect_info {
+                        state.cached_gateway = gw;
+                        state.cached_dns = dns;
+                        state.cached_conn_type = ct;
+                    }
                     poll_connections(&mut state);
                 }
             }
+            detect_counter = (detect_counter + 1) % 30;
             std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
         }
     });
 
-    // Latency probe on a separate thread (every 3s) so it doesn't block connection polling
     std::thread::spawn(|| {
         info!("network_monitor: latency probe started");
         loop {
+            let (elapsed, ok) = {
+                let query_start = Instant::now();
+                let result = std::net::TcpStream::connect_timeout(
+                    &"8.8.8.8:53".parse().unwrap(),
+                    Duration::from_millis(2000),
+                );
+                (query_start.elapsed().as_millis() as u32, result.is_ok())
+            };
             if let Some(mtx) = STATE.get() {
                 if let Ok(mut state) = mtx.lock() {
-                    latency_check(&mut state);
+                    if ok {
+                        let prev = state.latency_ms;
+                        state.latency_ms = elapsed;
+                        state.jitter_ms = (elapsed as f64 - prev as f64).abs();
+                        state.is_online = true;
+                    } else {
+                        state.latency_ms = 0;
+                        state.is_online = false;
+                    }
                 }
             }
             std::thread::sleep(Duration::from_secs(3));
@@ -504,45 +771,49 @@ pub fn start_network_monitor() {
 
 pub fn get_network_overview() -> NetOverviewDto {
     let guard = STATE.get().and_then(|m| m.lock().ok());
-    let (dl, ul, conns, addrs, dl_bps, ul_bps, lat, jit, online) = match guard {
-        Some(s) => (
-            s.download_bytes_today,
-            s.upload_bytes_today,
-            s.connections.len() as u32,
-            s.remote_addrs.len() as u32,
-            s.current_download_bps,
-            s.current_upload_bps,
-            s.latency_ms,
-            s.jitter_ms,
-            s.is_online,
-        ),
-        None => (0, 0, 0, 0, 0.0, 0.0, 0, 0.0, false),
-    };
-
-    let local_ip = get_local_ip();
-
-    NetOverviewDto {
-        generated_at: Utc::now().to_rfc3339(),
-        download_bytes_today: dl,
-        upload_bytes_today: ul,
-        active_connections: conns,
-        unique_remote_addrs: addrs,
-        speed: NetSpeedSnapshotDto {
-            download_bps: dl_bps,
-            upload_bps: ul_bps,
-            latency_ms: lat,
-            jitter_ms: jit,
-            timestamp: Utc::now().to_rfc3339(),
-        },
-        status: NetStatusDto {
-            is_online: online,
-            latency_ms: lat,
-            uptime_percent: if online { 99.99 } else { 0.0 },
-            avg_latency_ms: lat,
-            connection_type: "Ethernet".into(),
-            dns_server: "8.8.8.8".into(),
-            gateway: "192.168.1.1".into(),
-            local_ip,
+    match guard {
+        Some(s) => {
+            let local_ip = get_local_ip();
+            NetOverviewDto {
+                generated_at: Utc::now().to_rfc3339(),
+                download_bytes_today: s.download_bytes_today,
+                upload_bytes_today: s.upload_bytes_today,
+                active_connections: s.connections.len() as u32,
+                unique_remote_addrs: s.remote_addrs.len() as u32,
+                speed: NetSpeedSnapshotDto {
+                    download_bps: s.current_download_bps,
+                    upload_bps: s.current_upload_bps,
+                    latency_ms: s.latency_ms,
+                    jitter_ms: s.jitter_ms,
+                    timestamp: Utc::now().to_rfc3339(),
+                },
+                status: NetStatusDto {
+                    is_online: s.is_online,
+                    latency_ms: s.latency_ms,
+                    uptime_percent: if s.is_online { 99.99 } else { 0.0 },
+                    avg_latency_ms: s.latency_ms,
+                    connection_type: s.cached_conn_type.clone(),
+                    dns_server: s.cached_dns.clone(),
+                    gateway: s.cached_gateway.clone(),
+                    local_ip,
+                },
+            }
+        }
+        None => NetOverviewDto {
+            generated_at: Utc::now().to_rfc3339(),
+            download_bytes_today: 0,
+            upload_bytes_today: 0,
+            active_connections: 0,
+            unique_remote_addrs: 0,
+            speed: NetSpeedSnapshotDto {
+                download_bps: 0.0, upload_bps: 0.0, latency_ms: 0, jitter_ms: 0.0,
+                timestamp: Utc::now().to_rfc3339(),
+            },
+            status: NetStatusDto {
+                is_online: false, latency_ms: 0, uptime_percent: 0.0, avg_latency_ms: 0,
+                connection_type: "Unknown".into(), dns_server: "—".into(),
+                gateway: "—".into(), local_ip: "127.0.0.1".into(),
+            },
         },
     }
 }
@@ -643,11 +914,9 @@ pub fn get_network_usage_history() -> Vec<NetUsagePointDto> {
 pub fn run_speed_test() -> (f64, f64, u32) {
     use std::io::Read as IoRead;
 
-    // Download test: fetch a known URL and measure throughput
     let mut download_bps = 0.0_f64;
     let mut upload_bps = 0.0_f64;
 
-    // Download: connect to a CDN endpoint and measure bytes received over time
     let dl_start = Instant::now();
     let mut total_bytes = 0u64;
     if let Ok(mut stream) = std::net::TcpStream::connect_timeout(
@@ -655,7 +924,6 @@ pub fn run_speed_test() -> (f64, f64, u32) {
         Duration::from_secs(5),
     ) {
         use std::io::Write;
-        // Send a simple HTTP GET for the speed test endpoint
         let request = b"GET /__down?bytes=10000000 HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n";
         if stream.write_all(request).is_ok() {
             stream.set_read_timeout(Some(Duration::from_secs(8))).ok();
@@ -665,9 +933,7 @@ pub fn run_speed_test() -> (f64, f64, u32) {
                     Ok(0) => break,
                     Ok(n) => {
                         total_bytes += n as u64;
-                        if dl_start.elapsed() > Duration::from_secs(8) {
-                            break;
-                        }
+                        if dl_start.elapsed() > Duration::from_secs(8) { break; }
                     }
                     Err(_) => break,
                 }
@@ -679,7 +945,6 @@ pub fn run_speed_test() -> (f64, f64, u32) {
         download_bps = (total_bytes as f64 * 8.0) / dl_duration;
     }
 
-    // Upload test: send data and measure throughput
     let ul_start = Instant::now();
     let mut ul_bytes = 0u64;
     if let Ok(mut stream) = std::net::TcpStream::connect_timeout(
@@ -703,7 +968,6 @@ pub fn run_speed_test() -> (f64, f64, u32) {
         upload_bps = (ul_bytes as f64 * 8.0) / ul_duration;
     }
 
-    // Latency
     let ping_start = Instant::now();
     let latency_ms = match std::net::TcpStream::connect_timeout(
         &"8.8.8.8:53".parse().unwrap(),
@@ -725,4 +989,68 @@ pub fn get_local_ip() -> String {
         }
     }
     "127.0.0.1".into()
+}
+
+fn detect_gateway() -> String {
+    // Resolve the default gateway by examining which IP the OS routes to
+    // We connect a UDP socket to a remote address and then check the local address
+    // The gateway is usually at x.x.x.1 on the same subnet
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = socket.local_addr() {
+                if let std::net::IpAddr::V4(ip) = addr.ip() {
+                    let octets = ip.octets();
+                    return format!("{}.{}.{}.1", octets[0], octets[1], octets[2]);
+                }
+            }
+        }
+    }
+    "—".into()
+}
+
+fn detect_dns_server() -> String {
+    // On Windows, read DNS from the registry or use the latency target as indicator
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        if let Ok(output) = Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                "(Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses.Count -gt 0 } | Select-Object -First 1).ServerAddresses[0]"])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !s.is_empty() && s.contains('.') {
+                return s;
+            }
+        }
+    }
+    "—".into()
+}
+
+fn detect_connection_type() -> String {
+    #[cfg(windows)]
+    {
+        let mut table_ptr: *mut windows::Win32::NetworkManagement::IpHelper::MIB_IF_TABLE2 = std::ptr::null_mut();
+        let ret = unsafe { GetIfTable2(&mut table_ptr) };
+        if ret.0 == 0 && !table_ptr.is_null() {
+            let result = unsafe {
+                let table = &*table_ptr;
+                let count = table.NumEntries as usize;
+                let rows = std::slice::from_raw_parts(table.Table.as_ptr(), count);
+                let mut conn_type = "Unknown".to_string();
+                for row in rows {
+                    if row.OperStatus != IF_OPER_STATUS(1) { continue; }
+                    match row.Type {
+                        6 => { conn_type = "Ethernet".into(); break; }
+                        71 => { conn_type = "Wi-Fi".into(); break; }
+                        _ => {}
+                    }
+                }
+                conn_type
+            };
+            unsafe { FreeMibTable(table_ptr as *const _); }
+            return result;
+        }
+    }
+    "Unknown".into()
 }

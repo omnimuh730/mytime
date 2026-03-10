@@ -45,6 +45,7 @@ fn metric(
 pub fn build_app_status(state: &AppState) -> AppStatusDto {
     let paths = state.paths();
 
+    let net = network_monitor::get_network_overview();
     AppStatusDto {
         app_name: "MyTime".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -57,8 +58,8 @@ pub fn build_app_status(state: &AppState) -> AppStatusDto {
         db_path: paths.db_path.display().to_string(),
         db_exists: paths.db_path.exists(),
         ip_address: network_monitor::get_local_ip(),
-        online: network_monitor::get_network_overview().status.is_online,
-        latency_ms: network_monitor::get_network_overview().status.latency_ms,
+        online: net.status.is_online,
+        latency_ms: net.status.latency_ms,
     }
 }
 

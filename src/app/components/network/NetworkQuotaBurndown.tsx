@@ -121,7 +121,7 @@ export function NetworkQuotaBurndown({ downloadBytesToday, uploadBytesToday }: P
             <Gauge className="w-5 h-5 text-chart-5" />
             Network Quota & Burndown
           </h3>
-          <p className="text-muted-foreground text-xs mt-1">Monthly data limit projection — tracked from today&apos;s real usage</p>
+          <p className="text-muted-foreground text-xs mt-1">Monthly quota projection from today&apos;s real interface counters</p>
         </div>
         <div className="flex items-center gap-2">
           {!isOverBudget && daysLeft < 15 && daysLeft > 0 && (
