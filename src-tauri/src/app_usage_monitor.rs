@@ -511,10 +511,8 @@ pub fn start_global_app_usage_monitor<R: Runtime>(_app: AppHandle<R>) {
     });
 
     thread::spawn(|| {
-        let mut tick = 0u32;
         loop {
             thread::sleep(Duration::from_secs(5));
-            tick += 1;
             persist_checkpoint();
         }
     });

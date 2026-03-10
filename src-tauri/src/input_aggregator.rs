@@ -215,18 +215,47 @@ fn detail_string(e: &InputMonitorEventDto) -> String {
 /// Initialize the aggregator (call once when starting the global input monitor).
 pub fn init() {
     let today = Local::now().date_naive();
-    let (first_ts, last_ts) = {
-        let date = today.format("%Y-%m-%d").to_string();
-        let events = crate::db::load_input_events_for_date(&date, 10000);
-        let first = events.iter().map(|e| e.0).min();
-        let last = events.iter().map(|e| e.0).max();
-        (first, last)
-    };
+    let date_str = today.format("%Y-%m-%d").to_string();
+
+    // Hydrate from SQLite so stats survive app restarts.
+    let events = crate::db::load_input_events_for_date(&date_str, 10_000);
+    let mut first_ts: Option<i64> = None;
+    let mut last_ts: Option<i64> = None;
+    let mut key_presses: u64 = 0;
+    let mut mouse_events: u64 = 0;
+    let mut scroll_events: u64 = 0;
+
+    for (ts, kind, action, _label, _state_key, _button, _direction, _x, _y) in &events {
+        if first_ts.is_none() || *ts < first_ts.unwrap() {
+            first_ts = Some(*ts);
+        }
+        if last_ts.is_none() || *ts > last_ts.unwrap() {
+            last_ts = Some(*ts);
+        }
+
+        match (kind.as_str(), action.as_str()) {
+            ("keyboard", "press") => {
+                key_presses = key_presses.saturating_add(1);
+            }
+            ("mouse", act) => {
+                // Count non-move mouse events on restore; runtime logic will
+                // still apply sequence collapsing for fine-grained stats.
+                if act != "move" {
+                    mouse_events = mouse_events.saturating_add(1);
+                }
+            }
+            ("scroll", _) => {
+                scroll_events = scroll_events.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+
     let _ = AGGREGATOR.set(Mutex::new(Inner {
         date_today: today,
-        key_presses: 0,
-        mouse_events: 0,
-        scroll_events: 0,
+        key_presses,
+        mouse_events,
+        scroll_events,
         first_activity_ts_ms: first_ts,
         last_activity_ts_ms: last_ts,
         recent: VecDeque::new(),

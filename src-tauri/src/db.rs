@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 /// Queued input event for batch insert.
 pub struct QueuedInputEvent {
@@ -66,7 +66,7 @@ fn flush_loop() {
 
 fn flush_pending() -> Result<(), String> {
     let batch = {
-        let Ok(q) = EVENT_QUEUE.get().ok_or("queue not init")?.lock() else {
+        let Ok(mut q) = EVENT_QUEUE.get().ok_or("queue not init")?.lock() else {
             return Ok(());
         };
         if q.is_empty() {
@@ -229,7 +229,7 @@ fn with_tx<F, T>(f: F) -> Option<T>
 where
     F: FnOnce(&Transaction) -> Result<T, rusqlite::Error>,
 {
-    let guard = DB.get()?.lock().ok()?;
+    let mut guard = DB.get()?.lock().ok()?;
     let tx = guard
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .ok()?;
@@ -547,7 +547,6 @@ pub fn load_latest_network_sample_for_date(date: &str) -> Option<(
             Err(rusqlite::Error::QueryReturnedNoRows)
         }
     })
-    .ok()
 }
 
 /// Execute multiple operations in a single atomic transaction.
