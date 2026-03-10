@@ -21,6 +21,7 @@ export interface AppEntry {
   name: string;
   color: string;
   minutes: number;
+  iconDataUrl?: string | null;
 }
 
 export interface Category {

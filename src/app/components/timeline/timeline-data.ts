@@ -10,6 +10,7 @@ export interface TimelineBlock {
   endMin: number;
   color: string;
   icon: string;
+  iconDataUrl?: string | null;
   category: string;
   keystrokes: number;
   clicks: number;

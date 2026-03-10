@@ -22,6 +22,8 @@ export function useActivityHeatmap() {
 
   useEffect(() => {
     void fetchHeatmap();
+    const id = setInterval(() => void fetchHeatmap(), 4000);
+    return () => clearInterval(id);
   }, [fetchHeatmap]);
 
   return {

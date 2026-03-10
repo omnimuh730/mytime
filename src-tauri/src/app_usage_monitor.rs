@@ -16,6 +16,21 @@ use crate::{
 };
 
 const MAX_STORED_SESSIONS: usize = 512;
+const MOVE_SEQUENCE_GAP_MS: i64 = 650;
+const SCROLL_SEQUENCE_GAP_MS: i64 = 450;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SequenceKind {
+    MouseMove,
+    ScrollWheel,
+    Other,
+}
+
+#[derive(Clone, Copy)]
+struct SequenceState {
+    kind: SequenceKind,
+    timestamp_ms: i64,
+}
 
 #[derive(Clone)]
 struct WindowSnapshot {
@@ -23,6 +38,7 @@ struct WindowSnapshot {
     app_name: String,
     title: String,
     app_id: String,
+    icon_data_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -50,9 +66,12 @@ struct State {
     current: Option<SessionRecord>,
     finished: VecDeque<SessionRecord>,
     input_minutes: BTreeMap<u32, InputMinuteRecord>,
+    last_sequence: Option<SequenceState>,
 }
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+#[cfg(windows)]
+static ICON_CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
 
 fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| {
@@ -62,6 +81,7 @@ fn state() -> &'static Mutex<State> {
             current: None,
             finished: VecDeque::new(),
             input_minutes: BTreeMap::new(),
+            last_sequence: None,
         })
     })
 }
@@ -85,6 +105,27 @@ fn same_window(a: &WindowSnapshot, b: &WindowSnapshot) -> bool {
     a.pid == b.pid && a.app_name == b.app_name && a.title == b.title
 }
 
+#[cfg(windows)]
+fn get_cached_icon_data_url(path: &str) -> Option<String> {
+    let cache = ICON_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    if let Ok(cache) = cache.lock() {
+        if let Some(value) = cache.get(path) {
+            return value.clone();
+        }
+    }
+
+    let resolved = windows_icons::get_icon_base64_by_path(path)
+        .ok()
+        .map(|base64| format!("data:image/png;base64,{base64}"));
+
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(path.to_string(), resolved.clone());
+    }
+
+    resolved
+}
+
 fn is_today(ts_ms: i64) -> bool {
     chrono::DateTime::from_timestamp_millis(ts_ms)
         .map(|dt| dt.with_timezone(&Local).date_naive() == Local::now().date_naive())
@@ -98,6 +139,32 @@ fn minute_of_day(ts_ms: i64) -> Option<u32> {
     })
 }
 
+fn event_sequence_kind(event: &InputMonitorEventDto) -> SequenceKind {
+    match (event.kind, event.action) {
+        ("mouse", "move") => SequenceKind::MouseMove,
+        ("scroll", "wheel") => SequenceKind::ScrollWheel,
+        _ => SequenceKind::Other,
+    }
+}
+
+fn is_sequence_continuation(last_sequence: Option<SequenceState>, event: &InputMonitorEventDto) -> bool {
+    let Some(last) = last_sequence else {
+        return false;
+    };
+
+    match event_sequence_kind(event) {
+        SequenceKind::MouseMove => {
+            last.kind == SequenceKind::MouseMove
+                && event.timestamp.saturating_sub(last.timestamp_ms) <= MOVE_SEQUENCE_GAP_MS
+        }
+        SequenceKind::ScrollWheel => {
+            last.kind == SequenceKind::ScrollWheel
+                && event.timestamp.saturating_sub(last.timestamp_ms) <= SCROLL_SEQUENCE_GAP_MS
+        }
+        SequenceKind::Other => false,
+    }
+}
+
 fn ensure_today(state: &mut State) {
     let today = Local::now().date_naive();
     if state.date_today != today {
@@ -105,6 +172,7 @@ fn ensure_today(state: &mut State) {
         state.current = None;
         state.finished.clear();
         state.input_minutes.clear();
+        state.last_sequence = None;
     }
 }
 
@@ -181,6 +249,7 @@ pub fn record_input_event(event: &InputMonitorEventDto) {
 
     let minute = minute_of_day(now);
     let has_current = state.current.is_some();
+    let is_sequence_continuation = is_sequence_continuation(state.last_sequence, event);
     if !has_current {
         return;
     }
@@ -210,9 +279,25 @@ pub fn record_input_event(event: &InputMonitorEventDto) {
             if let Some(current) = state.current.as_mut() {
                 current.ended_at_ms = now;
             }
-            if let Some(minute) = minute {
-                let bucket = state.input_minutes.entry(minute).or_default();
-                bucket.mouse_moves = bucket.mouse_moves.saturating_add(1);
+            if !is_sequence_continuation {
+                if let Some(minute) = minute {
+                    let bucket = state.input_minutes.entry(minute).or_default();
+                    bucket.mouse_moves = bucket.mouse_moves.saturating_add(1);
+                }
+            }
+        }
+        ("scroll", "wheel") => {
+            if let Some(current) = state.current.as_mut() {
+                current.ended_at_ms = now;
+                if !is_sequence_continuation {
+                    current.scroll_events = current.scroll_events.saturating_add(1);
+                }
+            }
+            if !is_sequence_continuation {
+                if let Some(minute) = minute {
+                    let bucket = state.input_minutes.entry(minute).or_default();
+                    bucket.scroll_events = bucket.scroll_events.saturating_add(1);
+                }
             }
         }
         ("scroll", _) => {
@@ -227,6 +312,10 @@ pub fn record_input_event(event: &InputMonitorEventDto) {
         }
         _ => {}
     }
+    state.last_sequence = Some(SequenceState {
+        kind: event_sequence_kind(event),
+        timestamp_ms: now,
+    });
 }
 
 fn to_session_dto(record: &SessionRecord) -> AppUsageSessionDto {
@@ -234,6 +323,7 @@ fn to_session_dto(record: &SessionRecord) -> AppUsageSessionDto {
         id: record.id,
         app_id: record.snapshot.app_id.clone(),
         app_name: record.snapshot.app_name.clone(),
+        icon_data_url: record.snapshot.icon_data_url.clone(),
         title: record.snapshot.title.clone(),
         pid: record.snapshot.pid,
         started_at_ms: record.started_at_ms,
@@ -269,6 +359,7 @@ pub fn get_activity_app_usage(limit: Option<u32>) -> ActivityAppUsageDto {
             .or_insert(AppUsageSummaryDto {
                 app_id: session.snapshot.app_id.clone(),
                 app_name: session.snapshot.app_name.clone(),
+                icon_data_url: session.snapshot.icon_data_url.clone(),
                 session_count: 0,
                 total_duration_ms: 0,
                 key_presses: 0,
@@ -277,6 +368,9 @@ pub fn get_activity_app_usage(limit: Option<u32>) -> ActivityAppUsageDto {
             });
         entry.session_count += 1;
         entry.total_duration_ms += duration_ms;
+        if entry.icon_data_url.is_none() {
+            entry.icon_data_url = session.snapshot.icon_data_url.clone();
+        }
         entry.key_presses = entry.key_presses.saturating_add(session.key_presses);
         entry.mouse_clicks = entry.mouse_clicks.saturating_add(session.mouse_clicks);
         entry.scroll_events = entry.scroll_events.saturating_add(session.scroll_events);
@@ -371,7 +465,7 @@ mod windows_impl {
         }
     }
 
-    fn read_process_name(pid: u32) -> Option<String> {
+    fn read_process_info(pid: u32) -> Option<(String, String)> {
         let process =
             unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()? };
         let mut buffer = vec![0u16; 260];
@@ -387,7 +481,8 @@ mod windows_impl {
         let _ = unsafe { CloseHandle(process) };
         result.ok()?;
         let path = String::from_utf16_lossy(&buffer[..size as usize]);
-        let stem = Path::new(path.trim())
+        let path = path.trim().to_string();
+        let stem = Path::new(&path)
             .file_stem()
             .and_then(|name| name.to_str())
             .unwrap_or("Unknown App")
@@ -396,7 +491,7 @@ mod windows_impl {
         if stem.is_empty() {
             None
         } else {
-            Some(stem)
+            Some((stem, path))
         }
     }
 
@@ -412,15 +507,22 @@ mod windows_impl {
             return None;
         }
 
-        let app_name = read_process_name(pid).unwrap_or_else(|| "Unknown App".to_string());
+        let (app_name, executable_path) =
+            read_process_info(pid).unwrap_or_else(|| ("Unknown App".to_string(), String::new()));
         let title = read_window_title(hwnd).unwrap_or_else(|| app_name.clone());
         let app_id = sanitize_app_id(&app_name);
+        let icon_data_url = if executable_path.is_empty() {
+            None
+        } else {
+            super::get_cached_icon_data_url(&executable_path)
+        };
 
         Some(WindowSnapshot {
             pid,
             app_name,
             title,
             app_id,
+            icon_data_url,
         })
     }
 }

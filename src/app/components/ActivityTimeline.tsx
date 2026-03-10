@@ -58,11 +58,19 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   return null;
 };
 
-export function ActivityTimeline() {
+interface ActivityTimelineProps {
+  initialRange?: "today" | "last7days";
+}
+
+export function ActivityTimeline({
+  initialRange = "last7days",
+}: ActivityTimelineProps) {
   const today = new Date();
   const weekAgo = new Date(today);
   weekAgo.setDate(weekAgo.getDate() - 6);
-  const [startDate, setStartDate] = useState(formatDate(weekAgo));
+  const [startDate, setStartDate] = useState(
+    initialRange === "today" ? formatDate(today) : formatDate(weekAgo),
+  );
   const [endDate, setEndDate] = useState(formatDate(today));
 
   const handleStartChange = useCallback((val: string) => {

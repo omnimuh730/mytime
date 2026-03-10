@@ -29,6 +29,8 @@ export function useActivityTimeline(startDate: string, endDate: string) {
 
   useEffect(() => {
     void fetchTimeline();
+    const id = setInterval(() => void fetchTimeline(), 4000);
+    return () => clearInterval(id);
   }, [fetchTimeline]);
 
   const data: ActivityTimelineChartPoint[] = dto

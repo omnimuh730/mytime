@@ -96,6 +96,7 @@ export interface AppUsageSessionDto {
   id: number;
   appId: string;
   appName: string;
+  iconDataUrl?: string | null;
   title: string;
   pid: number;
   startedAtMs: number;
@@ -109,6 +110,7 @@ export interface AppUsageSessionDto {
 export interface AppUsageSummaryDto {
   appId: string;
   appName: string;
+  iconDataUrl?: string | null;
   sessionCount: number;
   totalDurationMs: number;
   keyPresses: number;

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { type TimelineBlock, formatMinutes, formatDuration } from "./timeline-data";
 import { AppUsageSkeletonRow, AppSummarySkeletonRow } from "../ui/SkeletonRows";
+import { AppIcon } from "./AppIcon";
 
 interface AppUsageListProps {
   blocks: TimelineBlock[];
@@ -75,11 +76,25 @@ export function AppUsageList({
   const appStats = useMemo(() => {
     const stats: Record<
       string,
-      { app: string; totalMins: number; count: number; color: string; icon: string }
+      {
+        app: string;
+        totalMins: number;
+        count: number;
+        color: string;
+        icon: string;
+        iconDataUrl?: string | null;
+      }
     > = {};
     blocks.forEach((b) => {
       if (!stats[b.app]) {
-        stats[b.app] = { app: b.app, totalMins: 0, count: 0, color: b.color, icon: b.icon };
+        stats[b.app] = {
+          app: b.app,
+          totalMins: 0,
+          count: 0,
+          color: b.color,
+          icon: b.icon,
+          iconDataUrl: b.iconDataUrl,
+        };
       }
       stats[b.app].totalMins += b.endMin - b.startMin;
       stats[b.app].count++;
@@ -248,7 +263,11 @@ export function AppUsageList({
                     }`}
                   >
                     <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-xs shrink-0">{block.icon}</span>
+                      <AppIcon
+                        iconDataUrl={block.iconDataUrl}
+                        fallback={block.icon}
+                        size={14}
+                      />
                       <span className="text-xs text-foreground truncate">{block.title}</span>
                       {block.tag && (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary shrink-0">
@@ -307,7 +326,11 @@ export function AppUsageList({
                     isFiltered ? "bg-primary/5" : "hover:bg-secondary/40"
                   }`}
                 >
-                  <span className="text-sm shrink-0">{stat.icon}</span>
+                  <AppIcon
+                    iconDataUrl={stat.iconDataUrl}
+                    fallback={stat.icon}
+                    size={16}
+                  />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs text-foreground truncate">{stat.app}</span>

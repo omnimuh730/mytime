@@ -70,6 +70,7 @@ export function getActivityAppUsage(limit = 100) {
       generatedAt: new Date().toISOString(),
       sessions: [],
       apps: [],
+      inputMinutes: [],
     }),
     { limit },
   );

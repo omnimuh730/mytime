@@ -204,11 +204,47 @@ export function InputVisualizer() {
   const lastMoveLogAtRef = useRef(0);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
 
-  const addEvent = useCallback((evt: Omit<InputEvent, "id" | "timestamp">) => {
-    setRecentEvents((prev) => [
-      { ...evt, id: ++eventIdRef.current, timestamp: Date.now() },
-      ...prev.slice(0, 7),
-    ]);
+  const addEvent = useCallback((event: InputMonitorEventDto) => {
+    const label =
+      event.kind === "mouse" && event.action === "move"
+        ? `Mouse Move ${Math.round(event.x ?? 0)}, ${Math.round(event.y ?? 0)}`
+        : event.label;
+
+    setRecentEvents((prev) => {
+      const shouldMergeMouseMove =
+        event.kind === "mouse" &&
+        event.action === "move" &&
+        prev[0]?.kind === "mouse" &&
+        prev[0].label.startsWith("Mouse Move ");
+      const shouldMergeScroll =
+        event.kind === "scroll" &&
+        event.action === "wheel" &&
+        prev[0]?.kind === "scroll" &&
+        prev[0].label.startsWith("Scroll ");
+
+      if ((shouldMergeMouseMove || shouldMergeScroll) && prev[0]) {
+        const head = prev[0];
+        return [
+          {
+            ...head,
+            kind: event.kind,
+            label,
+            timestamp: event.timestamp,
+          },
+          ...prev.slice(1),
+        ];
+      }
+
+      return [
+        {
+          id: ++eventIdRef.current,
+          kind: event.kind,
+          label,
+          timestamp: event.timestamp,
+        },
+        ...prev.slice(0, 7),
+      ];
+    });
   }, []);
 
   const resetScrollIndicator = useCallback(() => {
@@ -255,10 +291,7 @@ export function InputVisualizer() {
         resetScrollIndicator();
       }
 
-      addEvent({
-        kind: event.kind,
-        label: event.label,
-      });
+      addEvent(event);
     },
     [addEvent, resetScrollIndicator],
   );

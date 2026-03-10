@@ -64,7 +64,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [isDark, setIsDark] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(0);
-  const { summary: dashboardSummary } = useDashboardSummary();
+  const {
+    summary: dashboardSummary,
+    isLoading: isDashboardSummaryLoading,
+    error: dashboardSummaryError,
+  } = useDashboardSummary();
   const { status: appStatus } = useAppStatus();
 
   useEffect(() => {
@@ -79,6 +83,12 @@ export default function App() {
   useEffect(() => {
     setLastUpdated(0);
   }, [activeTab]);
+
+  useEffect(() => {
+    if (dashboardSummary?.generatedAt) {
+      setLastUpdated(0);
+    }
+  }, [dashboardSummary?.generatedAt]);
 
   const page = PAGE_CONFIG[activeTab] || PAGE_CONFIG.dashboard;
   const PageIcon = page.icon;
@@ -220,7 +230,13 @@ export default function App() {
         {/* Main Content */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 pb-20 lg:pb-8">
           {activeTab === "dashboard" && <DashboardView summary={dashboardSummary} />}
-          {activeTab === "activity" && <ActivityView />}
+          {activeTab === "activity" && (
+            <ActivityView
+              summary={dashboardSummary}
+              isSummaryLoading={isDashboardSummaryLoading}
+              summaryError={dashboardSummaryError}
+            />
+          )}
           {activeTab === "network" && <NetworkView />}
           {activeTab === "help" && <HelpPage />}
         </main>
@@ -297,19 +313,20 @@ function DashboardView({ summary }: { summary: DashboardSummaryDto | null }) {
   );
 }
 
-function ActivityView() {
-  const { summary, isLoading, error, refresh } = useDashboardSummary();
+function ActivityView({
+  summary,
+  isSummaryLoading,
+  summaryError,
+}: {
+  summary: DashboardSummaryDto | null;
+  isSummaryLoading: boolean;
+  summaryError: string | null;
+}) {
   const {
     data: appUsageData,
     isLoading: isAppUsageLoading,
     error: appUsageError,
   } = useActivityAppUsage();
-
-  // Keep top 4 cards updated with latest input stats
-  useEffect(() => {
-    const id = setInterval(() => void refresh(), 4000);
-    return () => clearInterval(id);
-  }, [refresh]);
 
   const realTimelineBlocks = useMemo(
     () => toTimelineBlocks(appUsageData?.sessions ?? []),
@@ -345,9 +362,9 @@ function ActivityView() {
 
   return (
     <div className="space-y-4 sm:space-y-6">
-      {error && (
+      {summaryError && (
         <div className="rounded-xl border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
-          {error}
+          {summaryError}
         </div>
       )}
       {appUsageError && (
@@ -358,7 +375,7 @@ function ActivityView() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <StatCard
           title="Total Active Time"
-          value={isLoading ? "…" : activeTime}
+          value={isSummaryLoading ? "…" : activeTime}
           change={activeTimeChange}
           trend={activeTimeTrend ?? "up"}
           icon={<Timer className="w-5 h-5" />}
@@ -366,7 +383,7 @@ function ActivityView() {
         />
         <StatCard
           title="Mouse Events"
-          value={isLoading ? "…" : mouseEvents}
+          value={isSummaryLoading ? "…" : mouseEvents}
           change={mouseChange}
           trend={mouseTrend ?? "up"}
           icon={<Mouse className="w-5 h-5" />}
@@ -374,7 +391,7 @@ function ActivityView() {
         />
         <StatCard
           title="Keystrokes"
-          value={isLoading ? "…" : keystrokes}
+          value={isSummaryLoading ? "…" : keystrokes}
           change={keystrokesChange}
           trend={keystrokesTrend ?? "up"}
           icon={<Keyboard className="w-5 h-5" />}
@@ -409,7 +426,7 @@ function ActivityView() {
       {/* Activity Timeline + Activity Heatmap */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 items-stretch">
         <div className="[&>div]:h-full">
-          <ActivityTimeline />
+          <ActivityTimeline initialRange="today" />
         </div>
         <div className="[&>div]:h-full">
           <ActivityHeatmap />

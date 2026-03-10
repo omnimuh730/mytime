@@ -16,6 +16,21 @@ use crate::{
 };
 
 const MAX_RECENT_EVENTS: usize = 100;
+const MOVE_SEQUENCE_GAP_MS: i64 = 650;
+const SCROLL_SEQUENCE_GAP_MS: i64 = 450;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SequenceKind {
+    MouseMove,
+    ScrollWheel,
+    Other,
+}
+
+#[derive(Clone, Copy)]
+struct SequenceState {
+    kind: SequenceKind,
+    timestamp_ms: i64,
+}
 
 struct Inner {
     date_today: NaiveDate,
@@ -25,6 +40,7 @@ struct Inner {
     first_activity_ts_ms: Option<i64>,
     last_activity_ts_ms: Option<i64>,
     recent: VecDeque<LiveFeedEventDto>,
+    last_sequence: Option<SequenceState>,
 }
 
 static AGGREGATOR: OnceLock<Mutex<Inner>> = OnceLock::new();
@@ -40,6 +56,7 @@ fn ensure_today(inner: &mut Inner) {
         inner.first_activity_ts_ms = None;
         inner.last_activity_ts_ms = None;
         inner.recent.clear();
+        inner.last_sequence = None;
     }
 }
 
@@ -47,6 +64,55 @@ fn push_recent(inner: &mut Inner, dto: LiveFeedEventDto) {
     inner.recent.push_front(dto);
     while inner.recent.len() > MAX_RECENT_EVENTS {
         inner.recent.pop_back();
+    }
+}
+
+fn upsert_recent(inner: &mut Inner, dto: LiveFeedEventDto, replace_latest: bool) {
+    if replace_latest {
+        if let Some(existing) = inner.recent.front_mut() {
+            existing.event_type = dto.event_type;
+            existing.description = dto.description;
+            existing.timestamp = dto.timestamp;
+            existing.detail = dto.detail;
+            return;
+        }
+    }
+
+    push_recent(inner, dto);
+}
+
+fn event_sequence_kind(event: &InputMonitorEventDto) -> SequenceKind {
+    match (event.kind, event.action) {
+        ("mouse", "move") => SequenceKind::MouseMove,
+        ("scroll", "wheel") => SequenceKind::ScrollWheel,
+        _ => SequenceKind::Other,
+    }
+}
+
+fn is_sequence_continuation(inner: &Inner, event: &InputMonitorEventDto) -> bool {
+    let sequence_kind = event_sequence_kind(event);
+    let Some(last) = inner.last_sequence else {
+        return false;
+    };
+
+    match sequence_kind {
+        SequenceKind::MouseMove => {
+            last.kind == SequenceKind::MouseMove
+                && event.timestamp.saturating_sub(last.timestamp_ms) <= MOVE_SEQUENCE_GAP_MS
+        }
+        SequenceKind::ScrollWheel => {
+            last.kind == SequenceKind::ScrollWheel
+                && event.timestamp.saturating_sub(last.timestamp_ms) <= SCROLL_SEQUENCE_GAP_MS
+        }
+        SequenceKind::Other => false,
+    }
+}
+
+fn feed_description(event: &InputMonitorEventDto) -> String {
+    match (event.kind, event.action) {
+        ("mouse", "move") => "Mouse Move".to_string(),
+        ("scroll", "wheel") => event.label.clone(),
+        _ => event.label.clone(),
     }
 }
 
@@ -62,6 +128,7 @@ pub fn record(event: &InputMonitorEventDto) {
         inner.first_activity_ts_ms = Some(ts);
     }
     inner.last_activity_ts_ms = Some(ts);
+    let is_sequence_continuation = is_sequence_continuation(&inner, event);
 
     let event_type = match event.kind {
         "keyboard" => "keyboard",
@@ -76,24 +143,37 @@ pub fn record(event: &InputMonitorEventDto) {
                 inner.key_presses = inner.key_presses.saturating_add(1);
             }
         }
-        "mouse" => inner.mouse_events = inner.mouse_events.saturating_add(1),
-        "scroll" => inner.scroll_events = inner.scroll_events.saturating_add(1),
+        "mouse" => {
+            if event.action != "move" || !is_sequence_continuation {
+                inner.mouse_events = inner.mouse_events.saturating_add(1);
+            }
+        }
+        "scroll" => {
+            if event.action != "wheel" || !is_sequence_continuation {
+                inner.scroll_events = inner.scroll_events.saturating_add(1);
+            }
+        }
         _ => {}
     }
 
     let time_str = format_timestamp(ts);
     let detail = detail_string(event);
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    push_recent(
+    upsert_recent(
         &mut inner,
         LiveFeedEventDto {
             id,
             event_type: event_type.to_string(),
-            description: event.label.clone(),
+            description: feed_description(event),
             timestamp: time_str,
             detail: if detail.is_empty() { None } else { Some(detail) },
         },
+        is_sequence_continuation,
     );
+    inner.last_sequence = Some(SequenceState {
+        kind: event_sequence_kind(event),
+        timestamp_ms: ts,
+    });
 }
 
 fn format_timestamp(ms: i64) -> String {
@@ -107,11 +187,15 @@ fn detail_string(e: &InputMonitorEventDto) -> String {
     if let (Some(x), Some(y)) = (e.x, e.y) {
         parts.push(format!("({}, {})", x, y));
     }
-    if let Some(ref d) = e.direction {
-        parts.push(format!("scroll {}", d));
+    if !matches!((e.kind, e.action), ("scroll", "wheel")) {
+        if let Some(ref d) = e.direction {
+            parts.push(format!("scroll {}", d));
+        }
     }
-    if let Some(ref b) = e.button {
-        parts.push(b.to_string());
+    if !matches!((e.kind, e.action), ("mouse", "move")) {
+        if let Some(ref b) = e.button {
+            parts.push(b.to_string());
+        }
     }
     parts.join(", ")
 }
@@ -127,6 +211,7 @@ pub fn init() {
         first_activity_ts_ms: None,
         last_activity_ts_ms: None,
         recent: VecDeque::new(),
+        last_sequence: None,
     }));
 }
 

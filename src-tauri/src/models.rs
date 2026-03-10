@@ -119,6 +119,7 @@ pub struct AppUsageSessionDto {
     pub id: u64,
     pub app_id: String,
     pub app_name: String,
+    pub icon_data_url: Option<String>,
     pub title: String,
     pub pid: u32,
     pub started_at_ms: i64,
@@ -134,6 +135,7 @@ pub struct AppUsageSessionDto {
 pub struct AppUsageSummaryDto {
     pub app_id: String,
     pub app_name: String,
+    pub icon_data_url: Option<String>,
     pub session_count: u32,
     pub total_duration_ms: u64,
     pub key_presses: u32,

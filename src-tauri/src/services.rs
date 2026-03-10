@@ -2,10 +2,11 @@ use chrono::{Datelike, Duration, Local, NaiveDate, Utc};
 
 use crate::{
     app_state::AppState,
+    app_usage_monitor,
     models::{
-        ActivityHeatmapDto, ActivityTimelineDto, ActivityTimelinePointDto, AppStatusDto,
-        DashboardMetricsDto, DashboardSummaryDto, InputStatsDto, MetricCardDto, MetricTrendDto,
-        NetworkSummaryDto,
+        ActivityHeatmapDto, ActivityTimelineDto, ActivityTimelinePointDto, AppInputMinuteDto,
+        AppStatusDto, DashboardMetricsDto, DashboardSummaryDto, InputStatsDto, MetricCardDto,
+        MetricTrendDto, NetworkSummaryDto,
     },
 };
 
@@ -193,21 +194,23 @@ pub fn build_activity_timeline(
         return Err("end_date must be on or after start_date".to_string());
     }
 
+    let input_minutes = app_usage_monitor::get_activity_app_usage(None).input_minutes;
+    let today_input = if start <= today && today <= end {
+        aggregate_today_input(&input_minutes)
+    } else {
+        TodayInputAggregate::default()
+    };
+
     let day_count = (end - start).num_days() + 1;
     let is_hourly = day_count <= 1;
     let mut points = Vec::new();
 
     if is_hourly {
         for hour in 0..24 {
-            let seed = ((start.day() * 100) + (hour as u32 * 7) + start.month() * 31) % 100;
-            let is_work_hour = (8..=17).contains(&hour);
-            let is_extended = (6..=20).contains(&hour);
-            let active = if is_work_hour {
-                35.0 + (seed % 25) as f32
-            } else if is_extended {
-                10.0 + (seed % 15) as f32
+            let active = if start == today {
+                today_input.hourly_active_minutes[hour as usize] as f32
             } else {
-                (seed % 5) as f32
+                0.0
             };
 
             points.push(ActivityTimelinePointDto {
@@ -220,12 +223,10 @@ pub fn build_activity_timeline(
     } else if day_count <= 31 {
         for offset in 0..day_count {
             let date = start + Duration::days(offset);
-            let seed = (date.day() * 17 + date.month() * 31 + date.year() as u32) % 100;
-            let is_weekend = matches!(date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun);
-            let active = if is_weekend {
-                (2 + (seed % 4)) as f32
+            let active = if date == today {
+                today_input.total_active_minutes as f32 / 60.0
             } else {
-                (5 + (seed % 5)) as f32
+                0.0
             };
             let label = if day_count <= 14 {
                 format!("{}/{}", date.month(), date.day())
@@ -243,15 +244,20 @@ pub fn build_activity_timeline(
     } else {
         let week_count = ((day_count + 6) / 7) as usize;
         for week_index in 0..week_count {
-            let date = start + Duration::days((week_index * 7) as i64);
-            let seed = (date.day() * 13 + week_index as u32 * 23 + date.month() * 7) % 100;
-            let active = (4 + (seed % 7)) as f32;
+            let week_start = start + Duration::days((week_index * 7) as i64);
+            let week_end = std::cmp::min(week_start + Duration::days(6), end);
+            let days_in_week = (week_end - week_start).num_days() + 1;
+            let active = if week_start <= today && today <= week_end {
+                (today_input.total_active_minutes as f32 / 60.0) / days_in_week as f32
+            } else {
+                0.0
+            };
 
             points.push(ActivityTimelinePointDto {
                 label: format!("W{}", week_index + 1),
                 active,
                 inactive: 24.0 - active,
-                full_date: format!("Week of {}/{}", date.month(), date.day()),
+                full_date: format!("Week of {}/{}", week_start.month(), week_start.day()),
             });
         }
     }
@@ -284,29 +290,55 @@ pub fn build_activity_timeline(
 /// Row 0 = Monday, row 6 = Sunday; column = hour of day.
 pub fn build_activity_heatmap() -> ActivityHeatmapDto {
     let today = Local::now().date_naive();
-    let seed_base = today.ordinal() as usize;
-    let mut grid = Vec::with_capacity(7);
-    for day in 0..7 {
-        let mut row = Vec::with_capacity(24);
-        for hour in 0..24 {
-            let seed = (seed_base.wrapping_mul(31).wrapping_add(day * 17).wrapping_add(hour * 7)) % 100;
-            let is_weekend = day >= 5;
-            let is_work_hour = (9..=17).contains(&hour) && !is_weekend;
-            let is_extended = (7..=22).contains(&hour);
-            let value = if is_work_hour {
-                (50 + seed % 50).min(100)
-            } else if is_extended && !is_weekend {
-                (10 + seed % 30).min(100)
-            } else if is_extended {
-                (5 + seed % 20).min(100)
-            } else {
-                (seed % 10).min(100)
-            };
-            row.push(value as u8);
-        }
-        grid.push(row);
-    }
+    let input_minutes = app_usage_monitor::get_activity_app_usage(None).input_minutes;
+    let today_input = aggregate_today_input(&input_minutes);
+    let mut grid = vec![vec![0u8; 24]; 7];
+    let weekday = today.weekday().num_days_from_monday() as usize;
+    grid[weekday] = today_input.hourly_intensity.to_vec();
     ActivityHeatmapDto { grid }
+}
+
+#[derive(Default)]
+struct TodayInputAggregate {
+    total_active_minutes: u32,
+    hourly_active_minutes: [u32; 24],
+    hourly_intensity: [u8; 24],
+}
+
+fn bucket_activity_score(bucket: &AppInputMinuteDto) -> u32 {
+    (bucket.key_presses * 12)
+        .saturating_add(bucket.mouse_clicks * 10)
+        .saturating_add(bucket.scroll_events * 8)
+        .saturating_add(bucket.mouse_moves * 3)
+}
+
+fn aggregate_today_input(input_minutes: &[AppInputMinuteDto]) -> TodayInputAggregate {
+    let mut aggregate = TodayInputAggregate::default();
+    let mut hourly_scores = [0u32; 24];
+
+    for bucket in input_minutes {
+        let hour = (bucket.minute_of_day / 60).min(23) as usize;
+        let is_active = bucket.key_presses > 0
+            || bucket.mouse_clicks > 0
+            || bucket.mouse_moves > 0
+            || bucket.scroll_events > 0;
+
+        if is_active {
+            aggregate.total_active_minutes = aggregate.total_active_minutes.saturating_add(1);
+            aggregate.hourly_active_minutes[hour] =
+                aggregate.hourly_active_minutes[hour].saturating_add(1);
+        }
+
+        hourly_scores[hour] = hourly_scores[hour].saturating_add(bucket_activity_score(bucket));
+    }
+
+    for (hour, score) in hourly_scores.into_iter().enumerate() {
+        let active_pct = aggregate.hourly_active_minutes[hour].saturating_mul(100) / 60;
+        let intensity_from_volume = (score / 6).min(100) as u8;
+        aggregate.hourly_intensity[hour] = active_pct.max(intensity_from_volume as u32) as u8;
+    }
+
+    aggregate
 }
 
 fn parse_date(value: &str) -> Result<NaiveDate, String> {

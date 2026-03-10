@@ -1,16 +1,16 @@
 import type { AppEntry } from "./components/reports/CategoryManagerModal";
 import type {
   AppInputMinuteDto,
+  AppUsageSessionDto,
+  AppUsageSummaryDto,
+} from "./types/backend";
+import type {
   APMDataPoint,
   ActivityStatus,
   NetworkDataPoint,
   TimelineBlock,
   TimelineMarker,
 } from "./components/timeline/timeline-data";
-import type {
-  AppUsageSessionDto,
-  AppUsageSummaryDto,
-} from "./types/backend";
 
 const DAY_START_MIN = 7 * 60;
 const DAY_END_MIN = 21 * 60;
@@ -141,6 +141,7 @@ export function toTimelineBlocks(sessions: AppUsageSessionDto[]): TimelineBlock[
         endMin: clampedEnd,
         color: meta.color,
         icon: meta.icon,
+        iconDataUrl: session.iconDataUrl,
         category: meta.category,
         keystrokes: session.keyPresses,
         clicks: session.mouseClicks,
@@ -160,6 +161,7 @@ export function toSunburstApps(apps: AppUsageSummaryDto[]): AppEntry[] {
       name: app.appName,
       color: meta.color,
       minutes: Math.max(MIN_BLOCK_MINUTES, app.totalDurationMs / 60000),
+      iconDataUrl: app.iconDataUrl,
     };
   });
 }

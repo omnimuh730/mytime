@@ -38,20 +38,41 @@ function inputEventToActivityEvent(
       : e.kind === "scroll"
         ? "scroll"
         : "mouse";
+  const isMouseMove = e.kind === "mouse" && e.action === "move";
+  const isScrollWheel = e.kind === "scroll" && e.action === "wheel";
   let detail: string | undefined;
   if (e.x != null && e.y != null) {
     detail = `(${e.x}, ${e.y})`;
   }
-  if (e.direction) {
+  if (e.direction && !isScrollWheel) {
     detail = detail ? `${detail} scroll ${e.direction}` : `scroll ${e.direction}`;
   }
   return {
     id,
     type,
-    description: e.label,
+    description: isMouseMove ? "Mouse Move" : e.label,
     timestamp: formatTime(e.timestamp),
     detail: detail ?? undefined,
   };
+}
+
+function shouldMergeWithPreviousEvent(
+  previous: ActivityEvent | undefined,
+  event: InputMonitorEventDto,
+) {
+  if (!previous) {
+    return false;
+  }
+
+  if (event.kind === "mouse" && event.action === "move") {
+    return previous.type === "mouse" && previous.description === "Mouse Move";
+  }
+
+  if (event.kind === "scroll" && event.action === "wheel") {
+    return previous.type === "scroll" && previous.description.startsWith("Scroll ");
+  }
+
+  return false;
 }
 
 const iconMap = {
@@ -82,22 +103,32 @@ export function LiveActivityFeed() {
     if (hasTauriRuntime()) {
       getRecentInputEvents(MAX_VISIBLE_LOGS)
         .then((list) => {
+          const seeded = list.slice(0, MAX_VISIBLE_LOGS).map((e) => ({
+            id: e.id,
+            type: e.eventType,
+            description: e.description,
+            timestamp: e.timestamp,
+            detail: e.detail ?? undefined,
+          }));
           setEvents(
-            list.slice(0, MAX_VISIBLE_LOGS).map((e) => ({
-              id: e.id,
-              type: e.eventType,
-              description: e.description,
-              timestamp: e.timestamp,
-              detail: e.detail ?? undefined,
-            })),
+            seeded,
           );
+          nextIdRef.current =
+            seeded.reduce((maxId, event) => Math.max(maxId, event.id), 0) + 1;
         })
         .finally(() => setIsLoading(false));
 
       const unsub = subscribeToInputMonitor((payload) => {
         const id = nextIdRef.current++;
         const activity = inputEventToActivityEvent(payload, id);
-        setEvents((prev) => [activity, ...prev.slice(0, MAX_VISIBLE_LOGS - 1)]);
+        setEvents((prev) => {
+          if (shouldMergeWithPreviousEvent(prev[0], payload)) {
+            const head = prev[0];
+            return [{ ...head, ...activity, id: head.id }, ...prev.slice(1)];
+          }
+
+          return [activity, ...prev.slice(0, MAX_VISIBLE_LOGS - 1)];
+        });
       });
       return () => {
         unsub.then((fn) => fn());

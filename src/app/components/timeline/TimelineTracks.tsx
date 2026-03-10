@@ -9,6 +9,7 @@ import {
   formatMinutes,
   formatDuration,
 } from "./timeline-data";
+import { AppIcon } from "./AppIcon";
 
 interface TimelineTracksProps {
   blocks: TimelineBlock[];
@@ -43,7 +44,11 @@ function HoverTooltip({ block, x, y }: { block: TimelineBlock; x: number; y: num
     >
       <div className="bg-popover border border-border rounded-xl p-4 shadow-2xl shadow-black/40 min-w-[280px]">
         <div className="flex items-center gap-2 mb-3 pb-2 border-b border-border">
-          <span className="text-base">{block.icon}</span>
+          <AppIcon
+            iconDataUrl={block.iconDataUrl}
+            fallback={block.icon}
+            size={18}
+          />
           <div className="flex-1 min-w-0">
             <p className="text-sm text-foreground truncate">{block.app}</p>
             <p className="text-[10px] text-muted-foreground truncate">{block.title}</p>
@@ -218,11 +223,12 @@ export function TimelineTracks({
     return `M${getX(pts[0].minute)},${netTrackHeight} L${points.join(" L")} L${getX(pts[pts.length - 1].minute)},${netTrackHeight} Z`;
   }, [networkData, getX, networkMaxVal, viewStart, viewEnd]);
 
-  // APM color helper
-  const getAPMColor = (apm: number, type: string) => {
-    if (type === "typing") return "#ef4444";
-    if (type === "mouse") return "#eab308";
-    return "#3b82f6";
+  // Single-color input activity strip: brighter/taller bars mean more activity.
+  const getAPMColor = (apm: number) => {
+    if (apm >= 75) return "#6366f1";
+    if (apm >= 40) return "#818cf8";
+    if (apm >= 15) return "#a5b4fc";
+    return "#c7d2fe";
   };
 
   // ─── Minimap Navigator ───
@@ -488,9 +494,12 @@ export function TimelineTracks({
                     >
                       {w > 50 && (
                         <div className="px-1.5 py-0.5 flex items-center gap-1 h-full overflow-hidden">
-                          <span className="text-[9px] text-white/90 truncate">
-                            {block.icon} {block.app}
-                          </span>
+                          <AppIcon
+                            iconDataUrl={block.iconDataUrl}
+                            fallback={block.icon}
+                            size={12}
+                          />
+                          <span className="text-[9px] text-white/90 truncate">{block.app}</span>
                         </div>
                       )}
                     </div>
@@ -548,7 +557,7 @@ export function TimelineTracks({
                           left: x,
                           width: w,
                           height: h,
-                          backgroundColor: getAPMColor(d.apm, d.type),
+                          backgroundColor: getAPMColor(d.apm),
                           opacity: 0.5 + (d.apm / 100) * 0.5,
                         }}
                       />
@@ -557,20 +566,6 @@ export function TimelineTracks({
               </div>
               <div className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-muted-foreground/50 pointer-events-none">
                 INPUT
-              </div>
-              <div className="absolute left-2 top-0.5 flex items-center gap-2 text-[8px] text-muted-foreground/60 pointer-events-none">
-                <div className="flex items-center gap-1">
-                  <div className="w-2 h-1 rounded-sm bg-blue-500" />
-                  Read
-                </div>
-                <div className="flex items-center gap-1">
-                  <div className="w-2 h-1 rounded-sm bg-yellow-500" />
-                  Mouse
-                </div>
-                <div className="flex items-center gap-1">
-                  <div className="w-2 h-1 rounded-sm bg-red-500" />
-                  Type
-                </div>
               </div>
             </div>
           )}
