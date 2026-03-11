@@ -161,15 +161,19 @@ fn start_inprocess_global_input_monitor<R: Runtime>(app: AppHandle<R>) {
 
 #[cfg(windows)]
 fn start_helper_input_monitor<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
     let socket = UdpSocket::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
     let port = socket.local_addr().map_err(|error| error.to_string())?.port();
 
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let child = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
         .arg(INPUT_HOOK_HELPER_ARG)
         .arg(port.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|error| error.to_string())?;
 

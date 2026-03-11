@@ -1048,11 +1048,14 @@ fn detect_dns_server() -> String {
     // On Windows, read DNS from the registry or use the latency target as indicator
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         use std::process::Command;
-        if let Ok(output) = Command::new("powershell")
-            .args(["-NoProfile", "-Command",
-                "(Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses.Count -gt 0 } | Select-Object -First 1).ServerAddresses[0]"])
-            .output()
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command",
+            "(Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses.Count -gt 0 } | Select-Object -First 1).ServerAddresses[0]"]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(output) = cmd.output()
         {
             let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !s.is_empty() && s.contains('.') {
