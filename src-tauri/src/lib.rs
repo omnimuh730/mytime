@@ -10,7 +10,7 @@ mod ipc;
 mod models;
 mod network_monitor;
 mod services;
-mod singleton;
+pub mod singleton;
 mod startup;
 
 use app_state::AppState;
