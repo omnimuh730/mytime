@@ -1,5 +1,11 @@
 //! SQLite persistence for activity and network telemetry.
-//! Uses WAL mode, busy_timeout, synchronous=FULL for crash-safe atomic writes.
+//!
+//! **Connection strategy:** One connection is opened at app init and kept open for the app
+//! lifetime. We do not open/close per operation, so there is no repeated I/O from connect/disconnect.
+//! Writes use WAL mode (writes go to a WAL file; SQLite merges to the main DB on checkpoint).
+//! We run a passive WAL checkpoint every 30s to keep the WAL bounded and reduce crash risk
+//! when daily log grows (e.g. many hours of activity). synchronous=FULL and busy_timeout
+//! ensure crash-safe, atomic writes.
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -53,13 +59,33 @@ pub fn init(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+const WAL_CHECKPOINT_INTERVAL_SECS: u64 = 30;
+
 fn flush_loop() {
+    let mut tick: u64 = 0;
     loop {
         thread::sleep(Duration::from_secs(1));
         if let Err(e) = flush_pending() {
             warn!("db flush failed: {}", e);
         }
+        tick += 1;
+        if tick >= WAL_CHECKPOINT_INTERVAL_SECS {
+            tick = 0;
+            if let Err(e) = wal_checkpoint_passive() {
+                warn!("db WAL checkpoint failed: {}", e);
+            }
+        }
     }
+}
+
+/// Run a passive WAL checkpoint to move WAL pages into the main DB file.
+/// Keeps WAL size bounded (e.g. after many hours of activity) and reduces crash risk.
+fn wal_checkpoint_passive() -> Result<(), String> {
+    with_conn(|conn| {
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)", [])?;
+        Ok(())
+    })
+    .ok_or_else(|| "checkpoint failed".to_string())
 }
 
 fn flush_pending() -> Result<(), String> {

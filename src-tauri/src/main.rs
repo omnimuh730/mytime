@@ -16,5 +16,11 @@ fn main() {
         }
     }
 
-    mytime_lib::run()
+    // Single instance: only one process (Windows named mutex). Second launch exits here.
+    if !mytime_lib::singleton::acquire_single_instance() {
+        std::process::exit(0);
+    }
+    // When a second launch is attempted, tauri-plugin-single-instance focuses the existing window
+    // (only reached if singleton is not used, e.g. on non-Windows).
+    mytime_lib::run();
 }

@@ -10,6 +10,7 @@ mod ipc;
 mod models;
 mod network_monitor;
 mod services;
+mod singleton;
 mod startup;
 
 use app_state::AppState;
@@ -44,6 +45,13 @@ fn init_logging(log_dir: &Path) -> Result<(), Box<dyn Error>> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // Second launch: focus and show the existing main window.
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .setup(|app| {
             let paths = AppPaths::resolve(&app.handle())?;
             init_logging(&paths.log_dir)?;
