@@ -2,6 +2,7 @@ import type {
   ActivityAppUsageDto,
   ActivityHeatmapDto,
   ActivityTimelineDto,
+  AppInputMinuteDto,
 } from "../types/backend";
 import { invokeWithFallback } from "./tauri";
 
@@ -63,7 +64,7 @@ export function getActivityHeatmap() {
   );
 }
 
-export function getActivityAppUsage(limit = 100) {
+export function getActivityAppUsage(limit?: number) {
   return invokeWithFallback<ActivityAppUsageDto>(
     "get_activity_app_usage",
     () => ({
@@ -72,6 +73,13 @@ export function getActivityAppUsage(limit = 100) {
       apps: [],
       inputMinutes: [],
     }),
-    { limit },
+    limit != null ? { limit } : {},
+  );
+}
+
+export function getActivityInputMinutes() {
+  return invokeWithFallback<AppInputMinuteDto[]>(
+    "get_activity_input_minutes",
+    () => [],
   );
 }

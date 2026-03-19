@@ -6,6 +6,10 @@ import {
   type Category,
 } from "./CategoryManagerModal";
 import { getAppVisualMeta } from "../../activityAppUsage";
+import {
+  loadSunburstSettings,
+  saveSunburstSettings,
+} from "../../api/sunburstSettings";
 
 // --- All known apps (flat list) ---
 const ALL_APPS: AppEntry[] = [
@@ -243,6 +247,20 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
     });
   }, [resolvedApps]);
 
+  // Restore category layout from SQLite (config table)
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const saved = await loadSunburstSettings();
+      if (cancelled || !saved?.categories?.length) return;
+      setCategories(saved.categories);
+      setAssignments((prev) => ({ ...prev, ...saved.assignments }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Build sunburst data from categories + assignments
   const sunburstData: SunburstNode[] = useMemo(() => {
     const result: SunburstNode[] = [];
@@ -382,11 +400,18 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
   };
 
   const handleModalSave = useCallback(
-    (newCategories: Category[], newAssignments: Record<string, string>) => {
+    async (newCategories: Category[], newAssignments: Record<string, string>) => {
       setCategories(newCategories);
       setAssignments(newAssignments);
-      // Reset drill path since category structure may have changed
       setDrillPath([]);
+      try {
+        await saveSunburstSettings({
+          categories: newCategories,
+          assignments: newAssignments,
+        });
+      } catch {
+        /* optional: toast */
+      }
     },
     []
   );

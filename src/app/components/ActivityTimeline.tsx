@@ -12,18 +12,30 @@ import {
 } from "recharts";
 import { PremiumDateRangePicker } from "./ui/PremiumDateRangePicker";
 import { useActivityTimeline } from "../hooks/useActivityTimeline";
+import { formatTooltipNumber } from "../utils/formatTooltipValue";
 
 function formatDate(d: Date) {
   return d.toISOString().slice(0, 10);
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+const CustomTooltip = ({
+  active,
+  payload,
+  label,
+  isHourly,
+}: {
+  active?: boolean;
+  payload?: any[];
+  label?: string;
+  isHourly: boolean;
+}) => {
   if (active && payload && payload.length) {
     const activeVal = payload.find((p: any) => p.dataKey === "active")?.value ?? 0;
     const inactiveVal = payload.find((p: any) => p.dataKey === "inactive")?.value ?? 0;
-    const total = activeVal + inactiveVal;
-    const pct = total > 0 ? Math.round((activeVal / total) * 100) : 0;
-    const isHourly = total === 60;
+    const total = Number(activeVal) + Number(inactiveVal);
+    const pct = total > 0 ? Math.round((Number(activeVal) / total) * 100) : 0;
+    const activeStr = formatTooltipNumber(activeVal, 2);
+    const inactiveStr = formatTooltipNumber(inactiveVal, 2);
 
     return (
       <div className="bg-card border border-border rounded-xl p-3 shadow-xl min-w-[160px]">
@@ -35,7 +47,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
               <span className="text-muted-foreground">Active</span>
             </div>
             <span className="text-foreground tabular-nums">
-              {isHourly ? `${activeVal}m` : `${activeVal}h`}
+              {isHourly ? `${activeStr}m` : `${activeStr}h`}
             </span>
           </div>
           <div className="flex items-center justify-between text-sm">
@@ -44,7 +56,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
               <span className="text-muted-foreground">Inactive</span>
             </div>
             <span className="text-foreground tabular-nums">
-              {isHourly ? `${inactiveVal}m` : `${inactiveVal}h`}
+              {isHourly ? `${inactiveStr}m` : `${inactiveStr}h`}
             </span>
           </div>
           <div className="flex items-center justify-between text-xs pt-1 border-t border-border/50">
@@ -159,14 +171,17 @@ export function ActivityTimeline({
                 offset: 10,
               }}
             />
-            <Tooltip content={<CustomTooltip />} key="at-tooltip" />
+            <Tooltip
+              content={<CustomTooltip isHourly={isHourly} />}
+              key="at-tooltip"
+            />
             <ReferenceLine
               key="at-avg"
               y={avgActive}
               stroke="var(--grid-stroke-strong)"
               strokeDasharray="5 5"
               label={{
-                value: `Avg: ${avgActive}${isHourly ? "m" : "h"}`,
+                value: `Avg: ${formatTooltipNumber(avgActive, 2)}${isHourly ? "m" : "h"}`,
                 fill: "var(--axis-tick)",
                 fontSize: 10,
                 position: "left",

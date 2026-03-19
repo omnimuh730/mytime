@@ -11,6 +11,7 @@ import {
 } from "recharts";
 import type { NetSpeedSnapshotDto } from "../types/backend";
 import { runSpeedTest } from "../api/network";
+import { formatTooltipNumber } from "../utils/formatTooltipValue";
 
 interface Props {
   speedHistory: NetSpeedSnapshotDto[];
@@ -21,6 +22,26 @@ interface Props {
 function bpsToMbps(bps: number): number {
   return Math.round((bps / 1_000_000) * 100) / 100;
 }
+
+const SpeedHistoryTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div
+      className="rounded-xl border border-[var(--tooltip-border)] bg-[var(--tooltip-bg)] px-3 py-2 text-xs shadow-xl"
+      style={{ color: "var(--foreground)" }}
+    >
+      <p className="mb-1.5 text-[var(--axis-tick)]">{label}</p>
+      {payload.map((p: any, i: number) => (
+        <div key={i} className="flex justify-between gap-4">
+          <span style={{ color: p.color }}>{p.name}</span>
+          <span className="tabular-nums">
+            {formatTooltipNumber(p.value, 2)} Mbps
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 export function SpeedGauge({ speedHistory, currentDownloadBps, currentUploadBps }: Props) {
   const [isTesting, setIsTesting] = useState(false);
@@ -149,7 +170,7 @@ export function SpeedGauge({ speedHistory, currentDownloadBps, currentUploadBps 
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--grid-stroke)" vertical={false} />
                 <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "var(--axis-tick)", fontSize: 10 }} />
                 <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--axis-tick)", fontSize: 10 }} width={35} />
-                <Tooltip contentStyle={{ backgroundColor: "var(--tooltip-bg)", border: "1px solid var(--tooltip-border)", borderRadius: "12px", fontSize: "12px" }} labelStyle={{ color: "var(--axis-tick)" }} itemStyle={{ color: "var(--foreground)" }} />
+                <Tooltip content={<SpeedHistoryTooltip />} />
                 <Line type="monotone" dataKey="download" stroke="#6366f1" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: "#6366f1" }} />
                 <Line type="monotone" dataKey="upload" stroke="#22d3ee" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: "#22d3ee" }} />
               </LineChart>

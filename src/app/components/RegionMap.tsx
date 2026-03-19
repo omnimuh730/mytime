@@ -6,6 +6,7 @@ import {
   Tooltip,
 } from "recharts";
 import { MapPin } from "lucide-react";
+import { formatTooltipNumber } from "../utils/formatTooltipValue";
 
 const regionData = [
   { name: "North America", value: 42, connections: 1247, latency: "12ms", color: "#6366f1" },
@@ -22,7 +23,9 @@ const CustomTooltip = ({ active, payload }: any) => {
     return (
       <div className="bg-card border border-border rounded-xl p-3 shadow-xl">
         <p className="text-sm text-foreground mb-1">{data.name}</p>
-        <p className="text-xs text-muted-foreground">{data.value}% traffic</p>
+        <p className="text-xs text-muted-foreground">
+          {formatTooltipNumber(data.value, 2)}% traffic
+        </p>
         <p className="text-xs text-muted-foreground">{data.connections} connections</p>
         <p className="text-xs text-muted-foreground">Avg latency: {data.latency}</p>
       </div>

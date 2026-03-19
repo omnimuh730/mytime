@@ -5,7 +5,7 @@ use crate::{
     app_usage_monitor,
     input_aggregator,
     models::{
-        ActivityAppUsageDto, ActivityTimelineDto, AppStatusDto, DashboardSummaryDto,
+        ActivityAppUsageDto, ActivityTimelineDto, AppInputMinuteDto, AppStatusDto, DashboardSummaryDto,
         LiveFeedEventDto, NetConnectionDto, NetOverviewDto, NetProcessBandwidthDto,
         NetSpeedSnapshotDto, NetUsagePointDto, NetworkSummaryDto, SpeedTestResultDto,
     },
@@ -53,6 +53,11 @@ pub fn get_activity_app_usage(limit: Option<u32>) -> Result<ActivityAppUsageDto,
 }
 
 #[tauri::command]
+pub fn get_activity_input_minutes() -> Result<Vec<AppInputMinuteDto>, String> {
+    Ok(app_usage_monitor::get_input_minutes())
+}
+
+#[tauri::command]
 pub fn get_activity_timeline(
     start_date: Option<String>,
     end_date: Option<String>,
@@ -88,6 +93,19 @@ pub fn get_speed_history() -> Result<Vec<NetSpeedSnapshotDto>, String> {
 #[tauri::command]
 pub fn get_network_usage_history() -> Result<Vec<NetUsagePointDto>, String> {
     Ok(network_monitor::get_network_usage_history())
+}
+
+/// Persisted App Usage Breakdown (sunburst) category + assignment JSON for `CategoryManagerModal`.
+#[tauri::command]
+pub fn get_sunburst_settings() -> Result<String, String> {
+    Ok(crate::db::get_config("sunburst_settings").unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn save_sunburst_settings(json: String) -> Result<(), String> {
+    crate::db::set_config("sunburst_settings", &json)
+        .ok_or_else(|| "failed to save sunburst settings".to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

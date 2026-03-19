@@ -112,6 +112,7 @@ pub fn run() {
             ipc::get_input_stats,
             ipc::get_recent_input_events,
             ipc::get_activity_app_usage,
+            ipc::get_activity_input_minutes,
             ipc::get_activity_heatmap,
             ipc::get_activity_timeline,
             ipc::get_network_summary,
@@ -121,6 +122,8 @@ pub fn run() {
             ipc::get_speed_history,
             ipc::get_network_usage_history,
             ipc::run_speed_test,
+            ipc::get_sunburst_settings,
+            ipc::save_sunburst_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -3,6 +3,7 @@ use chrono::{Datelike, Duration, Local, NaiveDate, Utc};
 use crate::{
     app_state::AppState,
     app_usage_monitor,
+    db,
     models::{
         ActivityHeatmapDto, ActivityTimelineDto, ActivityTimelinePointDto, AppInputMinuteDto,
         AppStatusDto, DashboardMetricsDto, DashboardSummaryDto, InputStatsDto, MetricCardDto,
@@ -67,21 +68,22 @@ pub fn build_dashboard_summary(stats: Option<InputStatsDto>) -> DashboardSummary
     let today = Local::now().date_naive();
     let seed = today.ordinal() % 7;
 
+    // Align with Activity timeline "active" minutes (per-minute input buckets), not first→last event span.
+    let active_mins_from_buckets = {
+        let minutes = app_usage_monitor::get_input_minutes();
+        aggregate_today_input(&minutes).total_active_minutes as u64
+    };
+
     let (active_time, mouse_events, keystrokes) = match stats {
         Some(s) => {
-            let active_mins = s
-                .first_activity_ts_ms
-                .zip(s.last_activity_ts_ms)
-                .map(|(first, last)| ((last - first) / 60_000).max(0) as u64)
-                .unwrap_or(0);
-            let active_str = format!("{}h {:02}m", active_mins / 60, active_mins % 60);
+            let active_str = format!("{}h {:02}m", active_mins_from_buckets / 60, active_mins_from_buckets % 60);
             (
                 metric(
                     "Active Time Today",
                     active_str,
                     None,
                     None,
-                    Some("first → last activity today"),
+                    Some("minutes with keyboard/mouse activity"),
                 ),
                 metric(
                     "Mouse Events",
@@ -180,24 +182,18 @@ pub fn build_activity_timeline(
         return Err("end_date must be on or after start_date".to_string());
     }
 
-    let input_minutes = app_usage_monitor::get_activity_app_usage(None).input_minutes;
-    let today_input = if start <= today && today <= end {
-        aggregate_today_input(&input_minutes)
-    } else {
-        TodayInputAggregate::default()
-    };
+    // Live in-memory minutes for today (may be ahead of SQLite by a few seconds).
+    let today_live_minutes: Vec<AppInputMinuteDto> = app_usage_monitor::get_input_minutes();
 
     let day_count = (end - start).num_days() + 1;
     let is_hourly = day_count <= 1;
     let mut points = Vec::new();
 
     if is_hourly {
+        let mins = input_minutes_for_timeline_date(start, today, &today_live_minutes);
+        let day_agg = aggregate_today_input(&mins);
         for hour in 0..24 {
-            let active = if start == today {
-                today_input.hourly_active_minutes[hour as usize] as f32
-            } else {
-                0.0
-            };
+            let active = day_agg.hourly_active_minutes[hour as usize] as f32;
 
             points.push(ActivityTimelinePointDto {
                 label: format!("{hour:02}:00"),
@@ -209,11 +205,9 @@ pub fn build_activity_timeline(
     } else if day_count <= 31 {
         for offset in 0..day_count {
             let date = start + Duration::days(offset);
-            let active = if date == today {
-                today_input.total_active_minutes as f32 / 60.0
-            } else {
-                0.0
-            };
+            let mins = input_minutes_for_timeline_date(date, today, &today_live_minutes);
+            let agg = aggregate_today_input(&mins);
+            let active = agg.total_active_minutes as f32 / 60.0;
             let label = if day_count <= 14 {
                 format!("{}/{}", date.month(), date.day())
             } else {
@@ -233,11 +227,14 @@ pub fn build_activity_timeline(
             let week_start = start + Duration::days((week_index * 7) as i64);
             let week_end = std::cmp::min(week_start + Duration::days(6), end);
             let days_in_week = (week_end - week_start).num_days() + 1;
-            let active = if week_start <= today && today <= week_end {
-                (today_input.total_active_minutes as f32 / 60.0) / days_in_week as f32
-            } else {
-                0.0
-            };
+            let mut total_active_hours = 0.0_f32;
+            for d in 0i64..days_in_week {
+                let date = week_start + Duration::days(d);
+                let mins = input_minutes_for_timeline_date(date, today, &today_live_minutes);
+                let agg = aggregate_today_input(&mins);
+                total_active_hours += agg.total_active_minutes as f32 / 60.0;
+            }
+            let active = total_active_hours / days_in_week as f32;
 
             points.push(ActivityTimelinePointDto {
                 label: format!("W{}", week_index + 1),
@@ -276,11 +273,16 @@ pub fn build_activity_timeline(
 /// Row 0 = Monday, row 6 = Sunday; column = hour of day.
 pub fn build_activity_heatmap() -> ActivityHeatmapDto {
     let today = Local::now().date_naive();
-    let input_minutes = app_usage_monitor::get_activity_app_usage(None).input_minutes;
-    let today_input = aggregate_today_input(&input_minutes);
+    let week_start = today - Duration::days(6);
+    let today_live_minutes: Vec<AppInputMinuteDto> = app_usage_monitor::get_input_minutes();
     let mut grid = vec![vec![0u8; 24]; 7];
-    let weekday = today.weekday().num_days_from_monday() as usize;
-    grid[weekday] = today_input.hourly_intensity.to_vec();
+    for offset in 0..7 {
+        let date = week_start + Duration::days(offset);
+        let mins = input_minutes_for_timeline_date(date, today, &today_live_minutes);
+        let agg = aggregate_today_input(&mins);
+        let weekday = date.weekday().num_days_from_monday() as usize;
+        grid[weekday] = agg.hourly_intensity.to_vec();
+    }
     ActivityHeatmapDto { grid }
 }
 
@@ -296,6 +298,35 @@ fn bucket_activity_score(bucket: &AppInputMinuteDto) -> u32 {
         .saturating_add(bucket.mouse_clicks * 10)
         .saturating_add(bucket.scroll_events * 8)
         .saturating_add(bucket.mouse_moves * 3)
+}
+
+fn input_minutes_for_date_from_db(date: &str) -> Vec<AppInputMinuteDto> {
+    db::load_input_minutes_for_date(date)
+        .into_iter()
+        .map(
+            |(minute_of_day, key_presses, mouse_clicks, mouse_moves, scroll_events)| AppInputMinuteDto {
+                minute_of_day,
+                key_presses,
+                mouse_clicks,
+                mouse_moves,
+                scroll_events,
+            },
+        )
+        .collect()
+}
+
+/// For timeline/heatmap: use live in-memory minutes for `today`, otherwise load from SQLite.
+fn input_minutes_for_timeline_date(
+    date: NaiveDate,
+    today: NaiveDate,
+    today_live: &[AppInputMinuteDto],
+) -> Vec<AppInputMinuteDto> {
+    if date == today {
+        today_live.to_vec()
+    } else {
+        let date_str = date.format("%Y-%m-%d").to_string();
+        input_minutes_for_date_from_db(&date_str)
+    }
 }
 
 fn aggregate_today_input(input_minutes: &[AppInputMinuteDto]) -> TodayInputAggregate {

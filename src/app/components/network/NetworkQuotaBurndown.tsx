@@ -17,6 +17,7 @@ import {
   Settings,
   Flame,
 } from "lucide-react";
+import { formatTooltipNumber } from "../../utils/formatTooltipValue";
 
 interface Props {
   downloadBytesToday: number;
@@ -47,7 +48,9 @@ const CustomTooltip = ({ active, payload, label }: any) => {
             <span className="text-muted-foreground capitalize">
               {p.dataKey === "actual" ? "Actual" : p.dataKey === "projected" ? "Projected" : p.dataKey === "optimistic" ? "Best Case" : "Worst Case"}:
             </span>
-            <span className="text-foreground tabular-nums">{p.value?.toFixed(1)} GB</span>
+            <span className="text-foreground tabular-nums">
+              {formatTooltipNumber(p.value, 2)} GB
+            </span>
           </div>
         ))}
       </div>

@@ -49,6 +49,7 @@ import {
   toTimelineMarkers,
 } from "./activityAppUsage";
 import { useActivityAppUsage } from "./hooks/useActivityAppUsage";
+import { useActivityInputMinutes } from "./hooks/useActivityInputMinutes";
 import { useDashboardSummary } from "./hooks/useDashboardSummary";
 import { useAppStatus } from "./hooks/useAppStatus";
 import { useNetworkOverview, useProcessBandwidth, useNetworkConnections, useSpeedHistory } from "./hooks/useNetworkData";
@@ -248,12 +249,7 @@ export default function App() {
 
 function DashboardView({ summary }: { summary: DashboardSummaryDto | null }) {
   const { overview: netOverview } = useNetworkOverview();
-  const { data: appUsageData } = useActivityAppUsage();
-
-  const inputMinutes = useMemo(
-    () => appUsageData?.inputMinutes ?? [],
-    [appUsageData],
-  );
+  const { inputMinutes } = useActivityInputMinutes();
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -273,7 +269,10 @@ function DashboardView({ summary }: { summary: DashboardSummaryDto | null }) {
           trend={summary?.metrics.activeTimeToday.trend ?? "up"}
           icon={<Timer className="w-5 h-5" />}
           color="bg-primary/10 text-primary"
-          subtitle={summary?.metrics.activeTimeToday.subtitle ?? "first → last activity today"}
+          subtitle={
+            summary?.metrics.activeTimeToday.subtitle ??
+            "minutes with keyboard/mouse activity"
+          }
         />
         <StatCard
           title={summary?.metrics.mouseEvents.title ?? "Mouse Events"}

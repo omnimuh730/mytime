@@ -8,6 +8,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { formatTooltipNumber } from "../utils/formatTooltipValue";
 
 interface Props {
   downloadBytes?: number;
@@ -37,7 +38,9 @@ const CustomTooltip = ({ active, payload, label }: any) => {
           <div key={index} className="flex items-center gap-2 text-sm">
             <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
             <span className="text-muted-foreground capitalize">{entry.dataKey}:</span>
-            <span className="text-foreground">{entry.value} MB</span>
+            <span className="text-foreground">
+              {formatTooltipNumber(entry.value, 2)} MB
+            </span>
           </div>
         ))}
       </div>

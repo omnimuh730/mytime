@@ -436,7 +436,54 @@ pub fn load_input_events_for_date(
     .unwrap_or_default()
 }
 
-/// Load activity sessions for a date.
+/// Load activity sessions whose interval overlaps `[range_start_ms, range_end_ms)` (half-open on end).
+/// Uses wall times instead of the `date` column so sessions are not missed at day boundaries.
+pub fn load_activity_sessions_overlapping_time_range(
+    range_start_ms: i64,
+    range_end_ms: i64,
+) -> Vec<(
+    u64,
+    String,
+    String,
+    String,
+    u32,
+    i64,
+    i64,
+    u32,
+    u32,
+    u32,
+    Option<String>,
+)> {
+    with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            r#"SELECT id, app_id, app_name, title, pid, started_at_ms, ended_at_ms,
+                      key_presses, mouse_clicks, scroll_events, icon_data_url
+               FROM activity_sessions
+               WHERE started_at_ms < ?1 AND ended_at_ms >= ?2
+               ORDER BY started_at_ms ASC"#,
+        )?;
+        let rows = stmt.query_map(rusqlite::params![range_end_ms, range_start_ms], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u64,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get::<_, i64>(4)? as u32,
+                r.get(5)?,
+                r.get(6)?,
+                r.get::<_, i64>(7)? as u32,
+                r.get::<_, i64>(8)? as u32,
+                r.get::<_, i64>(9)? as u32,
+                r.get(10)?,
+            ))
+        })?;
+        let out: Result<Vec<_>, _> = rows.collect();
+        out
+    })
+    .unwrap_or_default()
+}
+
+/// Load activity sessions for a date (by stored `date` column).
 pub fn load_activity_sessions_for_date(
     date: &str,
 ) -> Vec<(

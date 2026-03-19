@@ -3,7 +3,8 @@ import { useCallback, useEffect, useState } from "react";
 import { getActivityAppUsage } from "../api/activity";
 import type { ActivityAppUsageDto } from "../types/backend";
 
-export function useActivityAppUsage(limit = 120) {
+/** Omit `limit` to load full session history (backend default ~10k). */
+export function useActivityAppUsage(limit?: number) {
   const [data, setData] = useState<ActivityAppUsageDto | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

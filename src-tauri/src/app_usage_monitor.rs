@@ -1,4 +1,4 @@
-use chrono::{Local, Timelike, Utc};
+use chrono::{Local, LocalResult, NaiveDate, TimeZone, Timelike, Utc};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     sync::{Mutex, OnceLock},
@@ -16,7 +16,8 @@ use crate::{
     models::{ActivityAppUsageDto, AppInputMinuteDto, AppUsageSessionDto, AppUsageSummaryDto},
 };
 
-const MAX_STORED_SESSIONS: usize = 512;
+/// In-memory ring buffer for fast transitions; API totals use SQLite so this is only for runtime churn.
+const MAX_STORED_SESSIONS: usize = 20_000;
 const MOVE_SEQUENCE_GAP_MS: i64 = 650;
 const SCROLL_SEQUENCE_GAP_MS: i64 = 450;
 /// Inactivity interval: activity extends 30s past last input. Inactivity starts at last_activity + 30s.
@@ -404,6 +405,110 @@ pub fn record_input_event(event: &InputMonitorEventDto) {
     });
 }
 
+fn local_day_start_end_ms(day: NaiveDate) -> Option<(i64, i64)> {
+    let start_naive = day.and_hms_opt(0, 0, 0)?;
+    let start = match Local.from_local_datetime(&start_naive) {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(_, dt) => dt,
+        LocalResult::None => return None,
+    };
+    let next_day = day.succ_opt()?;
+    let end_naive = next_day.and_hms_opt(0, 0, 0)?;
+    let end = match Local.from_local_datetime(&end_naive) {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(_, dt) => dt,
+        LocalResult::None => return None,
+    };
+    Some((start.timestamp_millis(), end.timestamp_millis()))
+}
+
+fn session_record_from_db_row(
+    (
+        id,
+        app_id,
+        app_name,
+        title,
+        pid,
+        started_at_ms,
+        ended_at_ms,
+        kp,
+        mc,
+        se,
+        icon,
+    ): (
+        u64,
+        String,
+        String,
+        String,
+        u32,
+        i64,
+        i64,
+        u32,
+        u32,
+        u32,
+        Option<String>,
+    ),
+) -> SessionRecord {
+    SessionRecord {
+        id,
+        snapshot: WindowSnapshot {
+            pid,
+            app_name,
+            title,
+            app_id,
+            icon_data_url: icon,
+        },
+        started_at_ms,
+        ended_at_ms,
+        key_presses: kp,
+        mouse_clicks: mc,
+        scroll_events: se,
+    }
+}
+
+/// Full calendar day (local): SQLite by timestamp overlap + in-memory `finished` / `current`
+/// so the Application Usage Log is not limited to sessions held in RAM since process start.
+///
+/// **Lock order:** We never hold the global SQLite connection mutex and then wait on `State`
+/// (input hook thread holds `State` while calling `persist_session` → DB). Snapshot RAM first,
+/// release `State`, then query DB — same pattern as `persist_checkpoint`.
+fn sessions_for_api_from_db_and_live(now: i64) -> Vec<SessionRecord> {
+    let today = Local::now().date_naive();
+    let (day_start_ms, day_end_ms) = local_day_start_end_ms(today).unwrap_or_else(|| {
+        let start = today
+            .and_hms_opt(0, 0, 0)
+            .map(|dt| dt.and_utc().timestamp_millis())
+            .unwrap_or(0);
+        (start, start + 86_400_000)
+    });
+
+    let (finished_snap, current_snap): (Vec<SessionRecord>, Option<SessionRecord>) =
+        match state().lock() {
+            Ok(g) => (
+                g.finished.iter().cloned().collect(),
+                g.current.clone(),
+            ),
+            Err(_) => (Vec::new(), None),
+        };
+
+    let mut by_id: HashMap<u64, SessionRecord> = HashMap::new();
+    for row in db::load_activity_sessions_overlapping_time_range(day_start_ms, day_end_ms) {
+        let rec = session_record_from_db_row(row);
+        by_id.insert(rec.id, rec);
+    }
+
+    for s in finished_snap {
+        by_id.insert(s.id, s);
+    }
+    if let Some(mut cur) = current_snap {
+        by_id.remove(&cur.id);
+        cur.ended_at_ms = now;
+        by_id.insert(cur.id, cur);
+    }
+
+    by_id.into_values().collect()
+}
+
 fn to_session_dto(record: &SessionRecord) -> AppUsageSessionDto {
     AppUsageSessionDto {
         id: record.id,
@@ -423,18 +528,9 @@ fn to_session_dto(record: &SessionRecord) -> AppUsageSessionDto {
 
 pub fn get_activity_app_usage(limit: Option<u32>) -> ActivityAppUsageDto {
     let now = Utc::now().timestamp_millis();
-    let mut sessions: Vec<SessionRecord> = Vec::new();
-
-    if let Ok(state) = state().lock() {
-        if let Some(current) = &state.current {
-            let mut snapshot = current.clone();
-            snapshot.ended_at_ms = now;
-            sessions.push(snapshot);
-        }
-        sessions.extend(state.finished.iter().cloned());
-    }
-
-    sessions.retain(|session| is_today(session.started_at_ms) || is_today(session.ended_at_ms));
+    // Session list + per-app duration must include all persisted rows, not the in-memory ring buffer
+    // (which drops oldest sessions after MAX_STORED_SESSIONS).
+    let mut sessions = sessions_for_api_from_db_and_live(now);
     sessions.sort_by(|a, b| b.started_at_ms.cmp(&a.started_at_ms));
 
     let mut grouped: HashMap<String, AppUsageSummaryDto> = HashMap::new();
@@ -465,13 +561,22 @@ pub fn get_activity_app_usage(limit: Option<u32>) -> ActivityAppUsageDto {
     let mut apps: Vec<AppUsageSummaryDto> = grouped.into_values().collect();
     apps.sort_by(|a, b| b.total_duration_ms.cmp(&a.total_duration_ms));
 
-    let session_limit = limit.unwrap_or(100) as usize;
-    let session_dtos = sessions
-        .into_iter()
-        .take(session_limit)
-        .map(|session| to_session_dto(&session))
-        .collect();
-    let input_minutes = if let Ok(state) = state().lock() {
+    // None / 0 = return every session for the local day (UI needs full log after restarts).
+    const SESSION_LIST_MAX: usize = 50_000;
+    let session_dtos: Vec<AppUsageSessionDto> = match limit {
+        Some(n) if n > 0 => sessions
+            .into_iter()
+            .take((n as usize).min(SESSION_LIST_MAX))
+            .map(|session| to_session_dto(&session))
+            .collect(),
+        _ => sessions
+            .into_iter()
+            .take(SESSION_LIST_MAX)
+            .map(|session| to_session_dto(&session))
+            .collect(),
+    };
+    let input_minutes = if let Ok(mut state) = state().lock() {
+        ensure_today(&mut state);
         state
             .input_minutes
             .iter()
@@ -493,6 +598,26 @@ pub fn get_activity_app_usage(limit: Option<u32>) -> ActivityAppUsageDto {
         apps,
         input_minutes,
     }
+}
+
+pub fn get_input_minutes() -> Vec<AppInputMinuteDto> {
+    let Ok(mut state) = state().lock() else {
+        return Vec::new();
+    };
+
+    ensure_today(&mut state);
+
+    state
+        .input_minutes
+        .iter()
+        .map(|(minute_of_day, value)| AppInputMinuteDto {
+            minute_of_day: *minute_of_day,
+            key_presses: value.key_presses,
+            mouse_clicks: value.mouse_clicks,
+            mouse_moves: value.mouse_moves,
+            scroll_events: value.scroll_events,
+        })
+        .collect()
 }
 
 #[cfg(not(windows))]

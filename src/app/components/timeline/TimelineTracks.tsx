@@ -10,6 +10,7 @@ import {
   formatDuration,
 } from "./timeline-data";
 import { AppIcon } from "./AppIcon";
+import { formatTooltipNumber } from "../../utils/formatTooltipValue";
 
 interface TimelineTracksProps {
   blocks: TimelineBlock[];
@@ -85,11 +86,15 @@ function HoverTooltip({ block, x, y }: { block: TimelineBlock; x: number; y: num
           </div>
           <div className="bg-secondary/50 rounded-lg p-2">
             <p className="text-[10px] text-muted-foreground">Downloaded</p>
-            <p className="text-sm text-foreground tabular-nums">{block.downloadMB} MB</p>
+            <p className="text-sm text-foreground tabular-nums">
+              {formatTooltipNumber(block.downloadMB, 2)} MB
+            </p>
           </div>
           <div className="bg-secondary/50 rounded-lg p-2">
             <p className="text-[10px] text-muted-foreground">Uploaded</p>
-            <p className="text-sm text-foreground tabular-nums">{block.uploadMB} MB</p>
+            <p className="text-sm text-foreground tabular-nums">
+              {formatTooltipNumber(block.uploadMB, 2)} MB
+            </p>
           </div>
         </div>
         {block.tag && (

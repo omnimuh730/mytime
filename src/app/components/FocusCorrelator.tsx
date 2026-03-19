@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { formatTooltipNumber } from "../utils/formatTooltipValue";
 import {
   ScatterChart,
   Scatter,
@@ -178,12 +179,14 @@ const CustomScatterTooltip = ({ active, payload }: any) => {
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-xs">
             <span className="text-muted-foreground">Input Intensity</span>
-            <span className="text-foreground tabular-nums">{data.apm} APM</span>
+            <span className="text-foreground tabular-nums">
+              {formatTooltipNumber(data.apm, 2)} APM
+            </span>
           </div>
           <div className="flex items-center justify-between text-xs">
             <span className="text-muted-foreground">Focus Score</span>
             <span className="tabular-nums" style={{ color }}>
-              {data.focusScore}%
+              {formatTooltipNumber(data.focusScore, 2)}%
             </span>
           </div>
         </div>
@@ -210,7 +213,9 @@ const CustomRhythmTooltip = ({ active, payload, label }: any) => {
               />
               <span className="text-muted-foreground">{p.name}</span>
             </div>
-            <span className="text-foreground tabular-nums">{p.value}</span>
+            <span className="text-foreground tabular-nums">
+              {formatTooltipNumber(p.value, 2)}
+            </span>
           </div>
         ))}
       </div>
