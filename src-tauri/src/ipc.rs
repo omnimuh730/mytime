@@ -5,9 +5,10 @@ use crate::{
     app_usage_monitor,
     input_aggregator,
     models::{
-        ActivityAppUsageDto, ActivityTimelineDto, AppInputMinuteDto, AppStatusDto, DashboardSummaryDto,
-        LiveFeedEventDto, NetConnectionDto, NetOverviewDto, NetProcessBandwidthDto,
-        NetSpeedSnapshotDto, NetUsagePointDto, NetworkSummaryDto, SpeedTestResultDto,
+        ActivityAppUsageDto, ActivityOverviewDto, ActivitySessionPageDto, ActivityTimelineDto,
+        AppInputMinuteDto, AppStatusDto, DashboardSummaryDto, LiveFeedEventDto,
+        NetConnectionDto, NetOverviewDto, NetProcessBandwidthDto, NetSpeedSnapshotDto,
+        NetUsagePointDto, NetworkSummaryDto, SpeedTestResultDto,
     },
     network_monitor,
     services,
@@ -50,6 +51,30 @@ pub fn get_activity_heatmap() -> Result<crate::models::ActivityHeatmapDto, Strin
 #[tauri::command]
 pub fn get_activity_app_usage(limit: Option<u32>) -> Result<ActivityAppUsageDto, String> {
     Ok(app_usage_monitor::get_activity_app_usage(limit))
+}
+
+#[tauri::command]
+pub fn get_activity_overview() -> Result<ActivityOverviewDto, String> {
+    Ok(services::build_activity_overview())
+}
+
+#[tauri::command]
+pub fn get_activity_session_page(
+    offset: Option<u32>,
+    limit: Option<u32>,
+    filter_text: Option<String>,
+    app_id: Option<String>,
+    sort_field: Option<String>,
+    sort_dir: Option<String>,
+) -> Result<ActivitySessionPageDto, String> {
+    Ok(services::build_activity_session_page(
+        offset,
+        limit,
+        filter_text,
+        app_id,
+        sort_field,
+        sort_dir,
+    ))
 }
 
 #[tauri::command]

@@ -1,6 +1,8 @@
 import type {
   ActivityAppUsageDto,
   ActivityHeatmapDto,
+  ActivityOverviewDto,
+  ActivitySessionPageDto,
   ActivityTimelineDto,
   AppInputMinuteDto,
 } from "../types/backend";
@@ -74,6 +76,50 @@ export function getActivityAppUsage(limit?: number) {
       inputMinutes: [],
     }),
     limit != null ? { limit } : {},
+  );
+}
+
+export function getActivityOverview() {
+  return invokeWithFallback<ActivityOverviewDto>(
+    "get_activity_overview",
+    () => ({
+      generatedAt: new Date().toISOString(),
+      totalSessions: 0,
+      apps: [],
+      inputMinutes: [],
+      timelineSessions: [],
+    }),
+  );
+}
+
+export function getActivitySessionPage(
+  args?: {
+    offset?: number;
+    limit?: number;
+    filterText?: string;
+    appId?: string | null;
+    sortField?: string;
+    sortDir?: string;
+  },
+) {
+  return invokeWithFallback<ActivitySessionPageDto>(
+    "get_activity_session_page",
+    () => ({
+      generatedAt: new Date().toISOString(),
+      total: 0,
+      offset: args?.offset ?? 0,
+      limit: args?.limit ?? 0,
+      hasMore: false,
+      sessions: [],
+    }),
+    {
+      offset: args?.offset,
+      limit: args?.limit,
+      filter_text: args?.filterText,
+      app_id: args?.appId ?? undefined,
+      sort_field: args?.sortField,
+      sort_dir: args?.sortDir,
+    },
   );
 }
 

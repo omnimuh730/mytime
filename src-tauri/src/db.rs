@@ -26,9 +26,35 @@ pub struct QueuedInputEvent {
     pub y: Option<i32>,
 }
 
+#[derive(Clone)]
+pub struct ActivitySessionRow {
+    pub id: u64,
+    pub app_id: String,
+    pub app_name: String,
+    pub title: String,
+    pub pid: u32,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub key_presses: u32,
+    pub mouse_clicks: u32,
+    pub scroll_events: u32,
+}
+
+#[derive(Clone)]
+pub struct ActivityAppSummaryRow {
+    pub app_id: String,
+    pub app_name: String,
+    pub icon_data_url: Option<String>,
+    pub session_count: u32,
+    pub total_duration_ms: u64,
+    pub key_presses: u32,
+    pub mouse_clicks: u32,
+    pub scroll_events: u32,
+}
+
 static EVENT_QUEUE: OnceLock<Mutex<Vec<QueuedInputEvent>>> = OnceLock::new();
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
 
@@ -224,6 +250,18 @@ fn migrate(conn: &Connection) -> Result<(), String> {
     let current: i32 = conn
         .query_row("SELECT version FROM schema_version LIMIT 1", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
+
+    if current < 2 {
+        conn.execute_batch(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_activity_sessions_date_started
+                ON activity_sessions(date, started_at_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_activity_sessions_date_app_started
+                ON activity_sessions(date, app_id, started_at_ms DESC);
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    }
 
     if current < SCHEMA_VERSION {
         conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])
@@ -522,6 +560,168 @@ pub fn load_activity_sessions_for_date(
         })?;
         let out: Result<Vec<_>, _> = rows.collect();
         out
+    })
+    .unwrap_or_default()
+}
+
+pub fn load_activity_session_rows_for_date(date: &str) -> Vec<ActivitySessionRow> {
+    with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            r#"SELECT id, app_id, app_name, title, pid, started_at_ms, ended_at_ms,
+                      key_presses, mouse_clicks, scroll_events
+               FROM activity_sessions
+               WHERE date = ?1
+               ORDER BY started_at_ms ASC"#,
+        )?;
+        let rows = stmt.query_map([date], |r| {
+            Ok(ActivitySessionRow {
+                id: r.get::<_, i64>(0)? as u64,
+                app_id: r.get(1)?,
+                app_name: r.get(2)?,
+                title: r.get(3)?,
+                pid: r.get::<_, i64>(4)? as u32,
+                started_at_ms: r.get(5)?,
+                ended_at_ms: r.get(6)?,
+                key_presses: r.get::<_, i64>(7)? as u32,
+                mouse_clicks: r.get::<_, i64>(8)? as u32,
+                scroll_events: r.get::<_, i64>(9)? as u32,
+            })
+        })?;
+        let out: Result<Vec<_>, _> = rows.collect();
+        out
+    })
+    .unwrap_or_default()
+}
+
+pub fn load_activity_app_summaries_for_date(date: &str) -> Vec<ActivityAppSummaryRow> {
+    with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            r#"SELECT app_id,
+                      app_name,
+                      MAX(NULLIF(icon_data_url, '')) AS icon_data_url,
+                      COUNT(*) AS session_count,
+                      SUM(CASE
+                            WHEN ended_at_ms > started_at_ms THEN ended_at_ms - started_at_ms
+                            ELSE 0
+                          END) AS total_duration_ms,
+                      SUM(key_presses) AS key_presses,
+                      SUM(mouse_clicks) AS mouse_clicks,
+                      SUM(scroll_events) AS scroll_events
+               FROM activity_sessions
+               WHERE date = ?1
+               GROUP BY app_id, app_name
+               ORDER BY total_duration_ms DESC, app_name ASC"#,
+        )?;
+        let rows = stmt.query_map([date], |r| {
+            Ok(ActivityAppSummaryRow {
+                app_id: r.get(0)?,
+                app_name: r.get(1)?,
+                icon_data_url: r.get(2)?,
+                session_count: r.get::<_, i64>(3)? as u32,
+                total_duration_ms: r.get::<_, i64>(4)?.max(0) as u64,
+                key_presses: r.get::<_, i64>(5)? as u32,
+                mouse_clicks: r.get::<_, i64>(6)? as u32,
+                scroll_events: r.get::<_, i64>(7)? as u32,
+            })
+        })?;
+        let out: Result<Vec<_>, _> = rows.collect();
+        out
+    })
+    .unwrap_or_default()
+}
+
+pub fn load_activity_sessions_page_for_date(
+    date: &str,
+    filter_text: Option<&str>,
+    app_id: Option<&str>,
+    sort_field: &str,
+    sort_dir: &str,
+    limit: u32,
+    offset: u32,
+) -> (u32, Vec<ActivitySessionRow>) {
+    with_conn(|conn| {
+        let filter_value = filter_text
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("%{}%", value.to_lowercase()));
+        let app_id_value = app_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        let total: u32 = conn
+            .query_row(
+                r#"SELECT COUNT(*)
+                   FROM activity_sessions
+                   WHERE date = :date
+                     AND (
+                       :filter IS NULL
+                       OR LOWER(title) LIKE :filter
+                       OR LOWER(app_name) LIKE :filter
+                     )
+                     AND (:app_id IS NULL OR app_id = :app_id)"#,
+                rusqlite::named_params! {
+                    ":date": date,
+                    ":filter": filter_value.as_deref(),
+                    ":app_id": app_id_value.as_deref(),
+                },
+                |row| row.get::<_, i64>(0),
+            )? as u32;
+
+        let order_expr = match sort_field {
+            "title" => "title COLLATE NOCASE",
+            "app" => "app_name COLLATE NOCASE",
+            "end" => "ended_at_ms",
+            "duration" => "(ended_at_ms - started_at_ms)",
+            _ => "started_at_ms",
+        };
+        let order_dir = if sort_dir.eq_ignore_ascii_case("asc") {
+            "ASC"
+        } else {
+            "DESC"
+        };
+
+        let sql = format!(
+            r#"SELECT id, app_id, app_name, title, pid, started_at_ms, ended_at_ms,
+                      key_presses, mouse_clicks, scroll_events
+               FROM activity_sessions
+               WHERE date = :date
+                 AND (
+                   :filter IS NULL
+                   OR LOWER(title) LIKE :filter
+                   OR LOWER(app_name) LIKE :filter
+                 )
+                 AND (:app_id IS NULL OR app_id = :app_id)
+               ORDER BY {order_expr} {order_dir}, started_at_ms DESC, id DESC
+               LIMIT :limit OFFSET :offset"#,
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::named_params! {
+                ":date": date,
+                ":filter": filter_value.as_deref(),
+                ":app_id": app_id_value.as_deref(),
+                ":limit": limit as i64,
+                ":offset": offset as i64,
+            },
+            |r| {
+                Ok(ActivitySessionRow {
+                    id: r.get::<_, i64>(0)? as u64,
+                    app_id: r.get(1)?,
+                    app_name: r.get(2)?,
+                    title: r.get(3)?,
+                    pid: r.get::<_, i64>(4)? as u32,
+                    started_at_ms: r.get(5)?,
+                    ended_at_ms: r.get(6)?,
+                    key_presses: r.get::<_, i64>(7)? as u32,
+                    mouse_clicks: r.get::<_, i64>(8)? as u32,
+                    scroll_events: r.get::<_, i64>(9)? as u32,
+                })
+            },
+        )?;
+        let sessions: Result<Vec<_>, _> = rows.collect();
+        Ok((total, sessions?))
     })
     .unwrap_or_default()
 }

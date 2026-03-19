@@ -112,6 +112,8 @@ pub fn run() {
             ipc::get_input_stats,
             ipc::get_recent_input_events,
             ipc::get_activity_app_usage,
+            ipc::get_activity_overview,
+            ipc::get_activity_session_page,
             ipc::get_activity_input_minutes,
             ipc::get_activity_heatmap,
             ipc::get_activity_timeline,

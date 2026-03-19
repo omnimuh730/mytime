@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from "react";
 import { TimelineToolbar } from "./TimelineToolbar";
 import { TimelineTracks } from "./TimelineTracks";
 import { AppUsageList } from "./AppUsageList";
+import type { AppUsageSummaryDto } from "../../types/backend";
 import {
   type APMDataPoint,
   type ActivityStatus,
@@ -21,8 +22,12 @@ interface TimelineEditorProps {
   apmData?: APMDataPoint[];
   markers?: TimelineMarker[];
   activityStatus?: ActivityStatus[];
+  appSummaries?: AppUsageSummaryDto[];
+  appIconDataUrlById?: Record<string, string | null | undefined>;
   isLoading?: boolean;
 }
+
+type TrackKey = "status" | "windows" | "network" | "apm";
 
 export function TimelineEditor({
   blocks: externalBlocks,
@@ -30,6 +35,8 @@ export function TimelineEditor({
   apmData: externalApmData,
   markers: externalMarkers,
   activityStatus: externalActivityStatus,
+  appSummaries = [],
+  appIconDataUrlById = {},
   isLoading = false,
 }: TimelineEditorProps) {
   const [blocks] = useState<TimelineBlock[]>(() =>
@@ -79,7 +86,7 @@ export function TimelineEditor({
     []
   );
 
-  const handleToggleTrack = (track: string) => {
+  const handleToggleTrack = (track: TrackKey) => {
     setVisibleTracks((prev) => ({ ...prev, [track]: !prev[track] }));
   };
 
@@ -110,7 +117,8 @@ export function TimelineEditor({
 
       {/* App Usage Detail List */}
       <AppUsageList
-        blocks={resolvedBlocks}
+        appSummaries={appSummaries}
+        appIconDataUrlById={appIconDataUrlById}
         isLoading={isLoading}
         onBlockSelect={handleSelectBlock}
         selectedBlockIds={selectedBlockIds}

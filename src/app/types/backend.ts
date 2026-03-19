@@ -133,6 +133,23 @@ export interface ActivityAppUsageDto {
   inputMinutes: AppInputMinuteDto[];
 }
 
+export interface ActivityOverviewDto {
+  generatedAt: string;
+  totalSessions: number;
+  apps: AppUsageSummaryDto[];
+  inputMinutes: AppInputMinuteDto[];
+  timelineSessions: AppUsageSessionDto[];
+}
+
+export interface ActivitySessionPageDto {
+  generatedAt: string;
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  sessions: AppUsageSessionDto[];
+}
+
 // ── Network monitoring DTOs ──
 
 export interface NetConnectionDto {

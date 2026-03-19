@@ -3,9 +3,9 @@ import { useCallback, useEffect, useState } from "react";
 import { getActivityInputMinutes } from "../api/activity";
 import type { AppInputMinuteDto } from "../types/backend";
 
-const POLL_MS = 3000;
+const DEFAULT_POLL_MS = 5_000;
 
-export function useActivityInputMinutes() {
+export function useActivityInputMinutes(pollMs = DEFAULT_POLL_MS) {
   const [inputMinutes, setInputMinutes] = useState<AppInputMinuteDto[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -28,9 +28,9 @@ export function useActivityInputMinutes() {
     void refresh();
     const id = window.setInterval(() => {
       void refresh();
-    }, POLL_MS);
+    }, pollMs);
     return () => window.clearInterval(id);
-  }, [refresh]);
+  }, [pollMs, refresh]);
 
   return {
     inputMinutes,

@@ -20,7 +20,7 @@ interface TimelineTracksProps {
   activityStatus: ActivityStatus[];
   zoom: number;
   onZoomChange: (zoom: number) => void;
-  visibleTracks: Record<string, boolean>;
+  visibleTracks: Record<"status" | "windows" | "network" | "apm", boolean>;
   onSelectBlock: (block: TimelineBlock) => void;
   selectedBlockIds: Set<string>;
 }

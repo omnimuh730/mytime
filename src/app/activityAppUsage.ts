@@ -121,36 +121,67 @@ function bucketType(bucket: AppInputMinuteDto): APMDataPoint["type"] {
   return "reading";
 }
 
-export function toTimelineBlocks(sessions: AppUsageSessionDto[]): TimelineBlock[] {
-  return sessions
-    .map((session) => {
-      const meta = getAppVisualMeta(session.appId, session.appName);
-      const startMin = minuteOfDay(session.startedAtMs);
-      const preciseEndMin = startMin + durationMinutes(session.startedAtMs, session.endedAtMs);
-      const clampedStart = clampMinute(startMin);
-      const clampedEnd = Math.max(
-        clampedStart + MIN_BLOCK_MINUTES,
-        clampMinute(preciseEndMin),
-      );
+type SessionLike = Pick<
+  AppUsageSessionDto,
+  | "id"
+  | "appId"
+  | "appName"
+  | "title"
+  | "startedAtMs"
+  | "endedAtMs"
+  | "keyPresses"
+  | "mouseClicks"
+> & {
+  iconDataUrl?: string | null;
+};
 
-      return {
-        id: `session-${session.id}`,
-        app: session.appName,
-        title: session.title || session.appName,
-        startMin: clampedStart,
-        endMin: clampedEnd,
-        color: meta.color,
-        icon: meta.icon,
-        iconDataUrl: session.iconDataUrl,
-        category: meta.category,
-        keystrokes: session.keyPresses,
-        clicks: session.mouseClicks,
-        downloadMB: 0,
-        uploadMB: 0,
-      };
-    })
+function toTimelineBlock(
+  session: SessionLike,
+  iconDataUrlByAppId?: Record<string, string | null | undefined>,
+): TimelineBlock {
+  const meta = getAppVisualMeta(session.appId, session.appName);
+  const startMin = minuteOfDay(session.startedAtMs);
+  const preciseEndMin =
+    startMin + durationMinutes(session.startedAtMs, session.endedAtMs);
+  const clampedStart = clampMinute(startMin);
+  const clampedEnd = Math.max(
+    clampedStart + MIN_BLOCK_MINUTES,
+    clampMinute(preciseEndMin),
+  );
+
+  return {
+    id: `session-${session.id}`,
+    app: session.appName,
+    title: session.title || session.appName,
+    startMin: clampedStart,
+    endMin: clampedEnd,
+    color: meta.color,
+    icon: meta.icon,
+    iconDataUrl:
+      session.iconDataUrl ?? iconDataUrlByAppId?.[session.appId] ?? undefined,
+    category: meta.category,
+    keystrokes: session.keyPresses,
+    clicks: session.mouseClicks,
+    downloadMB: 0,
+    uploadMB: 0,
+  };
+}
+
+export function toTimelineBlocks(
+  sessions: SessionLike[],
+  iconDataUrlByAppId?: Record<string, string | null | undefined>,
+): TimelineBlock[] {
+  return sessions
+    .map((session) => toTimelineBlock(session, iconDataUrlByAppId))
     .filter((block) => block.endMin > block.startMin)
     .sort((a, b) => a.startMin - b.startMin);
+}
+
+export function toTimelineBlockFromSession(
+  session: SessionLike,
+  iconDataUrlByAppId?: Record<string, string | null | undefined>,
+) {
+  return toTimelineBlock(session, iconDataUrlByAppId);
 }
 
 export function toSunburstApps(apps: AppUsageSummaryDto[]): AppEntry[] {

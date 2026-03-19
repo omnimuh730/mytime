@@ -5,7 +5,9 @@ import { subscribeToInputMonitor } from "../api/inputMonitor";
 import { hasTauriRuntime } from "../api/tauri";
 import type { DashboardSummaryDto } from "../types/backend";
 
-export function useDashboardSummary() {
+export type DashboardSummaryMode = "off" | "passive" | "live";
+
+export function useDashboardSummary(mode: DashboardSummaryMode = "live") {
   const [summary, setSummary] = useState<DashboardSummaryDto | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -25,14 +27,19 @@ export function useDashboardSummary() {
   }, []);
 
   useEffect(() => {
+    if (mode === "off") {
+      return;
+    }
+
     void refresh();
 
     let cancelled = false;
     let disposeLiveListener: (() => void) | undefined;
+    const throttleMs = mode === "live" ? 1_200 : 4_000;
+    const intervalMs = mode === "live" ? 6_000 : 12_000;
 
     const scheduleRefresh = () => {
       const now = Date.now();
-      const throttleMs = 300;
       const elapsed = now - lastRefreshAtRef.current;
 
       if (elapsed >= throttleMs) {
@@ -52,7 +59,7 @@ export function useDashboardSummary() {
       }, throttleMs - elapsed);
     };
 
-    if (hasTauriRuntime()) {
+    if (mode === "live" && hasTauriRuntime()) {
       void (async () => {
         const unlisten = await subscribeToInputMonitor(() => {
           scheduleRefresh();
@@ -69,7 +76,7 @@ export function useDashboardSummary() {
 
     const interval = window.setInterval(() => {
       scheduleRefresh();
-    }, 4000);
+    }, intervalMs);
 
     return () => {
       cancelled = true;
@@ -80,7 +87,7 @@ export function useDashboardSummary() {
         pendingRefreshRef.current = null;
       }
     };
-  }, [refresh]);
+  }, [mode, refresh]);
 
   return {
     summary,

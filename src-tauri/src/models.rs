@@ -162,6 +162,27 @@ pub struct ActivityAppUsageDto {
     pub input_minutes: Vec<AppInputMinuteDto>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityOverviewDto {
+    pub generated_at: String,
+    pub total_sessions: u32,
+    pub apps: Vec<AppUsageSummaryDto>,
+    pub input_minutes: Vec<AppInputMinuteDto>,
+    pub timeline_sessions: Vec<AppUsageSessionDto>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivitySessionPageDto {
+    pub generated_at: String,
+    pub total: u32,
+    pub offset: u32,
+    pub limit: u32,
+    pub has_more: bool,
+    pub sessions: Vec<AppUsageSessionDto>,
+}
+
 // ── Network monitoring DTOs ──
 
 #[derive(Clone, Serialize)]

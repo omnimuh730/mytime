@@ -4,11 +4,12 @@ import {
 } from "lucide-react";
 
 export type ToolType = "select" | null;
+type TrackKey = "status" | "windows" | "network" | "apm";
 
 interface TimelineToolbarProps {
   zoom: number;
-  visibleTracks: Record<string, boolean>;
-  onToggleTrack: (track: string) => void;
+  visibleTracks: Record<TrackKey, boolean>;
+  onToggleTrack: (track: TrackKey) => void;
   selectedCount: number;
   onClearSelection: () => void;
 }
@@ -20,7 +21,7 @@ export function TimelineToolbar({
   selectedCount,
   onClearSelection,
 }: TimelineToolbarProps) {
-  const trackToggles = [
+  const trackToggles: { id: TrackKey; label: string; color: string }[] = [
     { id: "status", label: "Activity Status", color: "#22c55e" },
     { id: "windows", label: "Active Windows", color: "#6366f1" },
     { id: "network", label: "Network I/O", color: "#22d3ee" },

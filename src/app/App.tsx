@@ -48,8 +48,8 @@ import {
   toTimelineBlocks,
   toTimelineMarkers,
 } from "./activityAppUsage";
-import { useActivityAppUsage } from "./hooks/useActivityAppUsage";
 import { useActivityInputMinutes } from "./hooks/useActivityInputMinutes";
+import { useActivityOverview } from "./hooks/useActivityOverview";
 import { useDashboardSummary } from "./hooks/useDashboardSummary";
 import { useAppStatus } from "./hooks/useAppStatus";
 import { useNetworkOverview, useProcessBandwidth, useNetworkConnections, useSpeedHistory } from "./hooks/useNetworkData";
@@ -66,11 +66,17 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [isDark, setIsDark] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(0);
+  const dashboardSummaryMode =
+    activeTab === "dashboard"
+      ? "live"
+      : activeTab === "activity"
+        ? "passive"
+        : "off";
   const {
     summary: dashboardSummary,
     isLoading: isDashboardSummaryLoading,
     error: dashboardSummaryError,
-  } = useDashboardSummary();
+  } = useDashboardSummary(dashboardSummaryMode);
   const { status: appStatus } = useAppStatus();
 
   useEffect(() => {
@@ -249,7 +255,7 @@ export default function App() {
 
 function DashboardView({ summary }: { summary: DashboardSummaryDto | null }) {
   const { overview: netOverview } = useNetworkOverview();
-  const { inputMinutes } = useActivityInputMinutes();
+  const { inputMinutes } = useActivityInputMinutes(5_000);
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -338,31 +344,44 @@ function ActivityView({
   summaryError: string | null;
 }) {
   const {
-    data: appUsageData,
-    isLoading: isAppUsageLoading,
-    error: appUsageError,
-  } = useActivityAppUsage();
+    overview: activityOverview,
+    isLoading: isActivityOverviewLoading,
+    error: activityOverviewError,
+  } = useActivityOverview();
+
+  const appSummaries = activityOverview?.apps ?? [];
+  const appIconDataUrlById = useMemo(
+    () =>
+      Object.fromEntries(
+        appSummaries.map((app) => [app.appId, app.iconDataUrl ?? undefined]),
+      ),
+    [appSummaries],
+  );
 
   const realTimelineBlocks = useMemo(
-    () => toTimelineBlocks(appUsageData?.sessions ?? []),
-    [appUsageData],
+    () =>
+      toTimelineBlocks(
+        activityOverview?.timelineSessions ?? [],
+        appIconDataUrlById,
+      ),
+    [activityOverview?.timelineSessions, appIconDataUrlById],
   );
   const realActivityStatus = useMemo(
-    () => toActivityStatus(appUsageData?.inputMinutes ?? []),
-    [appUsageData],
+    () => toActivityStatus(activityOverview?.inputMinutes ?? []),
+    [activityOverview?.inputMinutes],
   );
   const realTimelineMarkers = useMemo(
-    () => toTimelineMarkers(appUsageData?.inputMinutes ?? []),
-    [appUsageData],
+    () => toTimelineMarkers(activityOverview?.inputMinutes ?? []),
+    [activityOverview?.inputMinutes],
   );
   const realApmData = useMemo(
-    () => toApmData(appUsageData?.inputMinutes ?? []),
-    [appUsageData],
+    () => toApmData(activityOverview?.inputMinutes ?? []),
+    [activityOverview?.inputMinutes],
   );
   const realNetworkData = useMemo(() => toNetworkData(), []);
   const realSunburstApps = useMemo(
-    () => toSunburstApps(appUsageData?.apps ?? []),
-    [appUsageData],
+    () => toSunburstApps(appSummaries),
+    [appSummaries],
   );
 
   const activeTime = summary?.metrics.activeTimeToday?.value ?? "—";
@@ -382,9 +401,9 @@ function ActivityView({
           {summaryError}
         </div>
       )}
-      {appUsageError && (
+      {activityOverviewError && (
         <div className="rounded-xl border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
-          {appUsageError}
+          {activityOverviewError}
         </div>
       )}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
@@ -428,7 +447,9 @@ function ActivityView({
           markers={realTimelineMarkers}
           apmData={realApmData}
           networkData={realNetworkData}
-          isLoading={isAppUsageLoading}
+          appSummaries={appSummaries}
+          appIconDataUrlById={appIconDataUrlById}
+          isLoading={isActivityOverviewLoading}
         />
       </div>
 

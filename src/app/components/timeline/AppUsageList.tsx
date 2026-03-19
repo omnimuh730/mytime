@@ -1,18 +1,40 @@
-import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import {
-  ChevronUp,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
   ChevronDown,
+  ChevronUp,
   Clock,
   Filter,
-  Search,
   LayoutList,
+  Search,
 } from "lucide-react";
-import { type TimelineBlock, formatMinutes, formatDuration } from "./timeline-data";
-import { AppUsageSkeletonRow, AppSummarySkeletonRow } from "../ui/SkeletonRows";
+
+import { useActivitySessionPage } from "../../hooks/useActivitySessionPage";
+import type { AppUsageSummaryDto } from "../../types/backend";
+import {
+  getAppVisualMeta,
+  toTimelineBlockFromSession,
+} from "../../activityAppUsage";
+import {
+  type TimelineBlock,
+  formatDuration,
+  formatMinutes,
+} from "./timeline-data";
+import {
+  AppSummarySkeletonRow,
+  AppUsageSkeletonRow,
+} from "../ui/SkeletonRows";
 import { AppIcon } from "./AppIcon";
 
 interface AppUsageListProps {
-  blocks: TimelineBlock[];
+  appSummaries: AppUsageSummaryDto[];
+  appIconDataUrlById?: Record<string, string | null | undefined>;
   isLoading?: boolean;
   onBlockSelect: (block: TimelineBlock) => void;
   selectedBlockIds: Set<string>;
@@ -21,147 +43,99 @@ interface AppUsageListProps {
 type SortField = "title" | "start" | "end" | "duration" | "app";
 type SortDir = "asc" | "desc";
 
-// Simple infinite scroll hook for this component (works with growing block array)
-function useListInfiniteScroll(
-  totalCount: number,
-  opts: { batchSize: number; loadDelay: number; threshold: number }
-) {
-  const [visibleCount, setVisibleCount] = useState(opts.batchSize);
-  const [isLoading, setIsLoading] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const loadingRef = useRef(false);
-
-  // Reset visible count when total changes significantly (e.g., filter)
-  useEffect(() => {
-    setVisibleCount(Math.min(opts.batchSize, totalCount));
-  }, [totalCount, opts.batchSize]);
-
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el || loadingRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = el;
-    if (scrollHeight - scrollTop - clientHeight < opts.threshold) {
-      loadingRef.current = true;
-      setIsLoading(true);
-      setTimeout(() => {
-        setVisibleCount((prev) => prev + opts.batchSize);
-        setIsLoading(false);
-        loadingRef.current = false;
-      }, opts.loadDelay);
-    }
-  }, [opts.batchSize, opts.loadDelay, opts.threshold]);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.addEventListener("scroll", handleScroll);
-    return () => el.removeEventListener("scroll", handleScroll);
-  }, [handleScroll]);
-
-  return { visibleCount, isLoading, scrollRef };
-}
+const PAGE_SIZE = 120;
+const LOAD_MORE_THRESHOLD_PX = 120;
 
 export function AppUsageList({
-  blocks,
+  appSummaries,
+  appIconDataUrlById = {},
   isLoading = false,
   onBlockSelect,
   selectedBlockIds,
 }: AppUsageListProps) {
   const [sortField, setSortField] = useState<SortField>("start");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [filterText, setFilterText] = useState("");
   const [filterApp, setFilterApp] = useState<string | null>(null);
+  const deferredFilterText = useDeferredValue(filterText);
+  const mainScrollRef = useRef<HTMLDivElement>(null);
 
-  // Aggregate app stats (from real blocks)
-  const appStats = useMemo(() => {
-    const stats: Record<
-      string,
-      {
-        app: string;
-        totalMins: number;
-        count: number;
-        color: string;
-        icon: string;
-        iconDataUrl?: string | null;
-      }
-    > = {};
-    blocks.forEach((b) => {
-      if (!stats[b.app]) {
-        stats[b.app] = {
-          app: b.app,
-          totalMins: 0,
-          count: 0,
-          color: b.color,
-          icon: b.icon,
-          iconDataUrl: b.iconDataUrl,
-        };
-      }
-      stats[b.app].totalMins += b.endMin - b.startMin;
-      stats[b.app].count++;
-    });
-    return Object.values(stats).sort((a, b) => b.totalMins - a.totalMins);
-  }, [blocks]);
-
-  const totalMins = appStats.reduce((s, a) => s + a.totalMins, 0);
-
-  // Filtered & sorted blocks
-  const filteredBlocks = useMemo(() => {
-    let result = [...blocks];
-    if (filterText) {
-      const lower = filterText.toLowerCase();
-      result = result.filter(
-        (b) => b.title.toLowerCase().includes(lower) || b.app.toLowerCase().includes(lower)
-      );
-    }
-    if (filterApp) {
-      result = result.filter((b) => b.app === filterApp);
-    }
-    result.sort((a, b) => {
-      let cmp = 0;
-      if (sortField === "title") cmp = a.title.localeCompare(b.title);
-      else if (sortField === "app") cmp = a.app.localeCompare(b.app);
-      else if (sortField === "start") cmp = a.startMin - b.startMin;
-      else if (sortField === "end") cmp = a.endMin - b.endMin;
-      else if (sortField === "duration") cmp = (a.endMin - a.startMin) - (b.endMin - b.startMin);
-      return sortDir === "asc" ? cmp : -cmp;
-    });
-    return result;
-  }, [blocks, filterText, filterApp, sortField, sortDir]);
-
-  // Main list infinite scroll
   const {
-    visibleCount: mainVisible,
-    isLoading: mainLoading,
-    scrollRef: mainScrollRef,
-  } = useListInfiniteScroll(filteredBlocks.length, {
-    batchSize: 15,
-    loadDelay: 600,
-    threshold: 100,
+    sessions,
+    total,
+    hasMore,
+    isLoading: isPageLoading,
+    isLoadingMore,
+    error,
+    loadMore,
+  } = useActivitySessionPage({
+    limit: PAGE_SIZE,
+    filterText: deferredFilterText,
+    appId: filterApp,
+    sortField,
+    sortDir,
   });
 
-  // App summary infinite scroll
-  const {
-    visibleCount: summaryVisible,
-    isLoading: summaryLoading,
-    scrollRef: summaryScrollRef,
-  } = useListInfiniteScroll(appStats.length, {
-    batchSize: 10,
-    loadDelay: 500,
-    threshold: 60,
-  });
+  const summaryEntries = useMemo(() => {
+    const loweredFilter = deferredFilterText.trim().toLowerCase();
+    const next = loweredFilter
+      ? appSummaries.filter((app) =>
+          app.appName.toLowerCase().includes(loweredFilter),
+        )
+      : appSummaries;
+    return [...next].sort((a, b) => b.totalDurationMs - a.totalDurationMs);
+  }, [appSummaries, deferredFilterText]);
+
+  const totalMins = useMemo(
+    () =>
+      appSummaries.reduce(
+        (sum, app) => sum + Math.max(0, app.totalDurationMs / 60000),
+        0,
+      ),
+    [appSummaries],
+  );
+  const activeFilterAppName = useMemo(
+    () =>
+      appSummaries.find((app) => app.appId === filterApp)?.appName ?? filterApp,
+    [appSummaries, filterApp],
+  );
+
+  const handleScroll = useCallback(() => {
+    const el = mainScrollRef.current;
+    if (!el || isLoadingMore || !hasMore) {
+      return;
+    }
+
+    const { scrollTop, scrollHeight, clientHeight } = el;
+    if (scrollHeight - scrollTop - clientHeight <= LOAD_MORE_THRESHOLD_PX) {
+      void loadMore();
+    }
+  }, [hasMore, isLoadingMore, loadMore]);
+
+  useEffect(() => {
+    const el = mainScrollRef.current;
+    if (!el) {
+      return;
+    }
+    el.addEventListener("scroll", handleScroll);
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, [handleScroll]);
 
   const toggleSort = (field: SortField) => {
     if (sortField === field) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      setSortDir("asc");
+      setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+      return;
     }
+
+    setSortField(field);
+    setSortDir(field === "start" ? "desc" : "asc");
   };
 
   const SortIcon = ({ field }: { field: SortField }) => {
-    if (sortField !== field)
+    if (sortField !== field) {
       return <ChevronUp className="w-3 h-3 text-muted-foreground/30" />;
+    }
+
     return sortDir === "asc" ? (
       <ChevronUp className="w-3 h-3 text-primary" />
     ) : (
@@ -169,12 +143,8 @@ export function AppUsageList({
     );
   };
 
-  const visibleBlocks = filteredBlocks.slice(0, mainVisible);
-  const visibleStats = appStats.slice(0, summaryVisible);
-
   return (
     <div className="bg-card rounded-2xl border border-border overflow-hidden">
-      {/* Card Title */}
       <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-border">
         <div className="flex items-center justify-between">
           <div>
@@ -183,20 +153,17 @@ export function AppUsageList({
               Application Usage Log
             </h3>
             <p className="text-muted-foreground text-xs mt-1">
-              Detailed breakdown of all tracked application sessions
+              Paged session history with backend-side sorting and filtering
             </p>
           </div>
           <span className="text-[10px] text-muted-foreground tabular-nums">
-            {filteredBlocks.length} entries
+            {total} entries
           </span>
         </div>
       </div>
 
-      {/* Two-panel layout like ManicTime */}
       <div className="flex divide-x divide-border">
-        {/* Left: Detail List */}
         <div className="flex-1 min-w-0">
-          {/* Search & Filter Bar */}
           <div className="flex items-center gap-2 px-3 sm:px-4 py-2.5 border-b border-border">
             <div className="relative flex-1">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -204,7 +171,7 @@ export function AppUsageList({
                 type="text"
                 placeholder="Filter by title or app..."
                 value={filterText}
-                onChange={(e) => setFilterText(e.target.value)}
+                onChange={(event) => setFilterText(event.target.value)}
                 className="w-full bg-secondary border border-border rounded-lg pl-8 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
               />
             </div>
@@ -214,47 +181,73 @@ export function AppUsageList({
                 className="flex items-center gap-1 px-2 py-1 rounded-lg bg-primary/10 text-primary text-[10px] hover:bg-primary/20 transition-colors cursor-pointer"
               >
                 <Filter className="w-3 h-3" />
-                {filterApp}
+                {activeFilterAppName}
                 <span className="ml-1 opacity-60">&times;</span>
               </button>
             )}
             <span className="text-[10px] text-muted-foreground shrink-0">
-              showing {visibleBlocks.length} of {filteredBlocks.length}
+              showing {sessions.length} of {total}
             </span>
           </div>
 
-          {/* Table Header */}
+          {error && (
+            <div className="px-4 py-2 border-b border-border bg-destructive/10 text-xs text-destructive">
+              {error}
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <div className="min-w-[520px]">
               <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-4 py-1.5 border-b border-border bg-secondary/20 text-[10px] text-muted-foreground uppercase tracking-wider">
-                <button onClick={() => toggleSort("title")} className="flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors text-left">
+                <button
+                  onClick={() => toggleSort("title")}
+                  className="flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors text-left"
+                >
                   Title <SortIcon field="title" />
                 </button>
-                <button onClick={() => toggleSort("app")} className="flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors w-24">
+                <button
+                  onClick={() => toggleSort("app")}
+                  className="flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors w-24"
+                >
                   App <SortIcon field="app" />
                 </button>
-                <button onClick={() => toggleSort("start")} className="flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors w-20">
+                <button
+                  onClick={() => toggleSort("start")}
+                  className="flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors w-20"
+                >
                   Start <SortIcon field="start" />
                 </button>
-                <button onClick={() => toggleSort("end")} className="flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors w-20">
+                <button
+                  onClick={() => toggleSort("end")}
+                  className="flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors w-20"
+                >
                   End <SortIcon field="end" />
                 </button>
-                <button onClick={() => toggleSort("duration")} className="flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors w-16 justify-end">
+                <button
+                  onClick={() => toggleSort("duration")}
+                  className="flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors w-16 justify-end"
+                >
                   Duration <SortIcon field="duration" />
                 </button>
               </div>
             </div>
           </div>
 
-          {/* Table Body */}
-          <div ref={mainScrollRef} className="max-h-[320px] overflow-y-auto overflow-x-auto overscroll-y-contain">
+          <div
+            ref={mainScrollRef}
+            className="max-h-[320px] overflow-y-auto overflow-x-auto overscroll-y-contain"
+          >
             <div className="min-w-[520px]">
-              {visibleBlocks.map((block) => {
-                const duration = block.endMin - block.startMin;
+              {sessions.map((session) => {
+                const block = toTimelineBlockFromSession(
+                  session,
+                  appIconDataUrlById,
+                );
                 const isSelected = selectedBlockIds.has(block.id);
+
                 return (
                   <div
-                    key={block.id}
+                    key={session.id}
                     onClick={() => onBlockSelect(block)}
                     className={`grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-4 py-2 border-b border-border/50 cursor-pointer transition-all duration-150 ${
                       isSelected
@@ -268,16 +261,18 @@ export function AppUsageList({
                         fallback={block.icon}
                         size={14}
                       />
-                      <span className="text-xs text-foreground truncate">{block.title}</span>
-                      {block.tag && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary shrink-0">
-                          {block.tag}
-                        </span>
-                      )}
+                      <span className="text-xs text-foreground truncate">
+                        {block.title}
+                      </span>
                     </div>
                     <div className="flex items-center gap-1.5 w-24">
-                      <div className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: block.color }} />
-                      <span className="text-[11px] text-muted-foreground truncate">{block.app}</span>
+                      <div
+                        className="w-2 h-2 rounded-sm shrink-0"
+                        style={{ backgroundColor: block.color }}
+                      />
+                      <span className="text-[11px] text-muted-foreground truncate">
+                        {block.app}
+                      </span>
                     </div>
                     <span className="text-[11px] text-muted-foreground tabular-nums w-20">
                       {formatMinutes(block.startMin)}
@@ -286,26 +281,34 @@ export function AppUsageList({
                       {formatMinutes(block.endMin)}
                     </span>
                     <span className="text-[11px] text-foreground tabular-nums w-16 text-right">
-                      {formatDuration(duration)}
+                      {formatDuration(block.endMin - block.startMin)}
                     </span>
                   </div>
                 );
               })}
 
-              {/* Skeleton loading rows */}
-              {(isLoading || mainLoading) && Array.from({ length: 4 }).map((_, i) => (
-                <AppUsageSkeletonRow key={`skel-${i}`} />
-              ))}
-              {!isLoading && !mainLoading && visibleBlocks.length === 0 && (
-                <div className="px-4 py-8 text-sm text-muted-foreground">
-                  No real application sessions captured yet. Focus a few windows and this log will populate.
-                </div>
-              )}
+              {(isLoading || isPageLoading) &&
+                Array.from({ length: 4 }, (_, index) => (
+                  <AppUsageSkeletonRow key={`skel-${index}`} />
+                ))}
+
+              {isLoadingMore &&
+                Array.from({ length: 3 }, (_, index) => (
+                  <AppUsageSkeletonRow key={`skel-more-${index}`} />
+                ))}
+
+              {!isLoading &&
+                !isPageLoading &&
+                sessions.length === 0 &&
+                !error && (
+                  <div className="px-4 py-8 text-sm text-muted-foreground">
+                    No matching application sessions for the current filters.
+                  </div>
+                )}
             </div>
           </div>
         </div>
 
-        {/* Right: App Summary (like ManicTime right panel) — hidden on small screens */}
         <div className="w-[280px] shrink-0 hidden md:block">
           <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
             <span className="text-xs text-foreground">App Summary</span>
@@ -314,35 +317,48 @@ export function AppUsageList({
               Total: {formatDuration(totalMins)}
             </div>
           </div>
-          <div ref={summaryScrollRef} className="max-h-[360px] overflow-y-auto overscroll-y-contain">
-            {visibleStats.map((stat) => {
-              const pct = totalMins > 0 ? Math.round((stat.totalMins / totalMins) * 100) : 0;
-              const isFiltered = filterApp === stat.app;
+          <div className="max-h-[360px] overflow-y-auto overscroll-y-contain">
+            {summaryEntries.map((stat) => {
+              const minutes = Math.max(0, stat.totalDurationMs / 60000);
+              const pct =
+                totalMins > 0 ? Math.round((minutes / totalMins) * 100) : 0;
+              const isFiltered = filterApp === stat.appId;
+              const meta = getAppVisualMeta(stat.appId, stat.appName);
+
               return (
                 <div
-                  key={stat.app}
-                  onClick={() => setFilterApp(isFiltered ? null : stat.app)}
+                  key={stat.appId}
+                  onClick={() =>
+                    setFilterApp((prev) =>
+                      prev === stat.appId ? null : stat.appId,
+                    )
+                  }
                   className={`flex items-center gap-3 px-4 py-2.5 border-b border-border/50 cursor-pointer transition-all duration-150 ${
                     isFiltered ? "bg-primary/5" : "hover:bg-secondary/40"
                   }`}
                 >
                   <AppIcon
                     iconDataUrl={stat.iconDataUrl}
-                    fallback={stat.icon}
+                    fallback={meta.icon}
                     size={16}
                   />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-foreground truncate">{stat.app}</span>
+                      <span className="text-xs text-foreground truncate">
+                        {stat.appName}
+                      </span>
                       <span className="text-xs text-foreground tabular-nums shrink-0 ml-2">
-                        {formatDuration(stat.totalMins)}
+                        {formatDuration(minutes)}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
                         <div
                           className="h-full rounded-full transition-all duration-500"
-                          style={{ width: `${pct}%`, backgroundColor: stat.color }}
+                          style={{
+                            width: `${pct}%`,
+                            backgroundColor: meta.color,
+                          }}
                         />
                       </div>
                       <span className="text-[10px] text-muted-foreground w-8 text-right tabular-nums">
@@ -354,10 +370,11 @@ export function AppUsageList({
               );
             })}
 
-            {/* Summary skeleton rows */}
-            {(isLoading || summaryLoading) && Array.from({ length: 3 }).map((_, i) => (
-              <AppSummarySkeletonRow key={`skel-sum-${i}`} />
-            ))}
+            {(isLoading || isPageLoading) &&
+              summaryEntries.length === 0 &&
+              Array.from({ length: 3 }, (_, index) => (
+                <AppSummarySkeletonRow key={`skel-sum-${index}`} />
+              ))}
           </div>
         </div>
       </div>

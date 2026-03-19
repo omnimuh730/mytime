@@ -1,13 +1,14 @@
-use chrono::{Datelike, Duration, Local, NaiveDate, Utc};
+use chrono::{Datelike, Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
 
 use crate::{
     app_state::AppState,
     app_usage_monitor,
     db,
     models::{
-        ActivityHeatmapDto, ActivityTimelineDto, ActivityTimelinePointDto, AppInputMinuteDto,
-        AppStatusDto, DashboardMetricsDto, DashboardSummaryDto, InputStatsDto, MetricCardDto,
-        MetricTrendDto, NetworkSummaryDto,
+        ActivityHeatmapDto, ActivityOverviewDto, ActivitySessionPageDto, ActivityTimelineDto,
+        ActivityTimelinePointDto, AppInputMinuteDto, AppStatusDto, AppUsageSessionDto,
+        AppUsageSummaryDto, DashboardMetricsDto, DashboardSummaryDto, InputStatsDto,
+        MetricCardDto, MetricTrendDto, NetworkSummaryDto,
     },
     network_monitor,
 };
@@ -161,6 +162,205 @@ pub fn build_network_summary() -> NetworkSummaryDto {
         upload_today: metric("Upload Today", fmt_bytes(overview.upload_bytes_today), None, None, None),
         active_connections: metric("Active Connections", format!("{}", overview.active_connections), None, None, None),
         unique_domains: metric("Unique Remote IPs", format!("{}", overview.unique_remote_addrs), None, None, None),
+    }
+}
+
+fn to_compact_session_dto(row: &db::ActivitySessionRow) -> AppUsageSessionDto {
+    AppUsageSessionDto {
+        id: row.id,
+        app_id: row.app_id.clone(),
+        app_name: row.app_name.clone(),
+        icon_data_url: None,
+        title: row.title.clone(),
+        pid: row.pid,
+        started_at_ms: row.started_at_ms,
+        ended_at_ms: row.ended_at_ms,
+        duration_ms: (row.ended_at_ms - row.started_at_ms).max(0) as u64,
+        key_presses: row.key_presses,
+        mouse_clicks: row.mouse_clicks,
+        scroll_events: row.scroll_events,
+    }
+}
+
+fn to_app_summary_dto(row: db::ActivityAppSummaryRow) -> AppUsageSummaryDto {
+    AppUsageSummaryDto {
+        app_id: row.app_id,
+        app_name: row.app_name,
+        icon_data_url: row.icon_data_url,
+        session_count: row.session_count,
+        total_duration_ms: row.total_duration_ms,
+        key_presses: row.key_presses,
+        mouse_clicks: row.mouse_clicks,
+        scroll_events: row.scroll_events,
+    }
+}
+
+fn local_day_start_ms(day: NaiveDate) -> Option<i64> {
+    let start_naive = day.and_hms_opt(0, 0, 0)?;
+    let start = match Local.from_local_datetime(&start_naive) {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(_, dt) => dt,
+        LocalResult::None => return None,
+    };
+    Some(start.timestamp_millis())
+}
+
+fn build_timeline_sessions(
+    day: NaiveDate,
+    rows: &[db::ActivitySessionRow],
+) -> Vec<AppUsageSessionDto> {
+    const MAX_RAW_TIMELINE_SESSIONS: usize = 1_200;
+    const MINUTES_PER_DAY: usize = 24 * 60;
+    const MINUTE_MS: i64 = 60_000;
+
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    if rows.len() <= MAX_RAW_TIMELINE_SESSIONS {
+        return rows.iter().map(to_compact_session_dto).collect();
+    }
+
+    let Some(day_start_ms) = local_day_start_ms(day) else {
+        return rows.iter().take(MAX_RAW_TIMELINE_SESSIONS).map(to_compact_session_dto).collect();
+    };
+    let day_end_ms = day_start_ms + MINUTES_PER_DAY as i64 * MINUTE_MS;
+
+    let mut minute_slots: Vec<Option<(usize, i64)>> = vec![None; MINUTES_PER_DAY];
+
+    for (row_index, row) in rows.iter().enumerate() {
+        let clamped_start = row.started_at_ms.max(day_start_ms);
+        let clamped_end = row.ended_at_ms.min(day_end_ms);
+        if clamped_end <= clamped_start {
+            continue;
+        }
+
+        let start_minute = ((clamped_start - day_start_ms) / MINUTE_MS)
+            .clamp(0, (MINUTES_PER_DAY - 1) as i64) as usize;
+        let end_minute = (((clamped_end - 1) - day_start_ms) / MINUTE_MS)
+            .clamp(0, (MINUTES_PER_DAY - 1) as i64) as usize;
+
+        for minute in start_minute..=end_minute {
+            let bucket_start_ms = day_start_ms + minute as i64 * MINUTE_MS;
+            let bucket_end_ms = bucket_start_ms + MINUTE_MS;
+            let overlap_ms = (clamped_end.min(bucket_end_ms) - clamped_start.max(bucket_start_ms))
+                .max(0);
+
+            if overlap_ms == 0 {
+                continue;
+            }
+
+            let should_replace = match minute_slots[minute] {
+                Some((_, current_overlap_ms)) => overlap_ms > current_overlap_ms,
+                None => true,
+            };
+
+            if should_replace {
+                minute_slots[minute] = Some((row_index, overlap_ms));
+            }
+        }
+    }
+
+    let mut sessions = Vec::new();
+    let mut minute = 0usize;
+
+    while minute < MINUTES_PER_DAY {
+        let Some((row_index, _)) = minute_slots[minute] else {
+            minute += 1;
+            continue;
+        };
+
+        let mut end_minute = minute + 1;
+        while end_minute < MINUTES_PER_DAY {
+            match minute_slots[end_minute] {
+                Some((next_row_index, _)) if next_row_index == row_index => {
+                    end_minute += 1;
+                }
+                _ => break,
+            }
+        }
+
+        let row = &rows[row_index];
+        let block_start_ms = day_start_ms + minute as i64 * MINUTE_MS;
+        let block_end_ms = day_start_ms + end_minute as i64 * MINUTE_MS;
+        let block_duration_ms = (block_end_ms - block_start_ms).max(MINUTE_MS);
+        let row_duration_ms = (row.ended_at_ms - row.started_at_ms).max(1);
+        let ratio = (block_duration_ms as f64 / row_duration_ms as f64).clamp(0.0, 1.0);
+
+        sessions.push(AppUsageSessionDto {
+            id: row.id,
+            app_id: row.app_id.clone(),
+            app_name: row.app_name.clone(),
+            icon_data_url: None,
+            title: row.title.clone(),
+            pid: row.pid,
+            started_at_ms: block_start_ms,
+            ended_at_ms: block_end_ms,
+            duration_ms: block_duration_ms as u64,
+            key_presses: (row.key_presses as f64 * ratio).round() as u32,
+            mouse_clicks: (row.mouse_clicks as f64 * ratio).round() as u32,
+            scroll_events: (row.scroll_events as f64 * ratio).round() as u32,
+        });
+
+        minute = end_minute;
+    }
+
+    sessions
+}
+
+pub fn build_activity_overview() -> ActivityOverviewDto {
+    let today = Local::now().date_naive();
+    let today_str = today.format("%Y-%m-%d").to_string();
+
+    let session_rows = db::load_activity_session_rows_for_date(&today_str);
+    let total_sessions = session_rows.len() as u32;
+
+    ActivityOverviewDto {
+        generated_at: Utc::now().to_rfc3339(),
+        total_sessions,
+        apps: db::load_activity_app_summaries_for_date(&today_str)
+            .into_iter()
+            .map(to_app_summary_dto)
+            .collect(),
+        input_minutes: app_usage_monitor::get_input_minutes(),
+        timeline_sessions: build_timeline_sessions(today, &session_rows),
+    }
+}
+
+pub fn build_activity_session_page(
+    offset: Option<u32>,
+    limit: Option<u32>,
+    filter_text: Option<String>,
+    app_id: Option<String>,
+    sort_field: Option<String>,
+    sort_dir: Option<String>,
+) -> ActivitySessionPageDto {
+    let today = Local::now().date_naive();
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let resolved_limit = limit.unwrap_or(150).clamp(1, 500);
+    let resolved_offset = offset.unwrap_or(0);
+    let resolved_sort_field = sort_field.unwrap_or_else(|| "start".to_string());
+    let resolved_sort_dir = sort_dir.unwrap_or_else(|| "desc".to_string());
+
+    let (total, rows) = db::load_activity_sessions_page_for_date(
+        &today_str,
+        filter_text.as_deref(),
+        app_id.as_deref(),
+        &resolved_sort_field,
+        &resolved_sort_dir,
+        resolved_limit,
+        resolved_offset,
+    );
+    let sessions: Vec<AppUsageSessionDto> = rows.iter().map(to_compact_session_dto).collect();
+    let has_more = resolved_offset.saturating_add(sessions.len() as u32) < total;
+
+    ActivitySessionPageDto {
+        generated_at: Utc::now().to_rfc3339(),
+        total,
+        offset: resolved_offset,
+        limit: resolved_limit,
+        has_more,
+        sessions,
     }
 }
 
