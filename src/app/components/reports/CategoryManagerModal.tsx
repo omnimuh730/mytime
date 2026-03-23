@@ -1,4 +1,5 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
   X,
@@ -43,6 +44,12 @@ interface CategoryManagerModalProps {
   ) => void;
 }
 
+/** Display minutes in Category Manager with at most 2 decimal places (e.g. 4.23m). */
+export function formatAppMinutesForDisplay(minutes: number): string {
+  if (!Number.isFinite(minutes)) return "0.00";
+  return (Math.round(minutes * 100) / 100).toFixed(2);
+}
+
 const PRESET_COLORS = [
   "#6366f1",
   "#22d3ee",
@@ -84,6 +91,11 @@ export function CategoryManagerModal({
   const [dragOverCatId, setDragOverCatId] = useState<string | null>(null);
   const newCatInputRef = useRef<HTMLInputElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
+  const colorSwatchRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [colorPickerCoords, setColorPickerCoords] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
 
   // Reset state on open
   useEffect(() => {
@@ -109,6 +121,54 @@ export function CategoryManagerModal({
       editInputRef.current.focus();
     }
   }, [editingCatId]);
+
+  const pickerCategory = useMemo(
+    () => categories.find((c) => c.id === colorPickerCatId),
+    [categories, colorPickerCatId],
+  );
+
+  useLayoutEffect(() => {
+    if (!colorPickerCatId) {
+      setColorPickerCoords(null);
+      return;
+    }
+    const btn = colorSwatchRefs.current[colorPickerCatId];
+    if (!btn) {
+      setColorPickerCoords(null);
+      return;
+    }
+    const r = btn.getBoundingClientRect();
+    setColorPickerCoords({ top: r.bottom + 4, left: r.left });
+  }, [colorPickerCatId]);
+
+  useEffect(() => {
+    if (!colorPickerCatId) return;
+    const sync = () => {
+      const btn = colorSwatchRefs.current[colorPickerCatId];
+      if (!btn) return;
+      const r = btn.getBoundingClientRect();
+      setColorPickerCoords({ top: r.bottom + 4, left: r.left });
+    };
+    window.addEventListener("scroll", sync, true);
+    window.addEventListener("resize", sync);
+    return () => {
+      window.removeEventListener("scroll", sync, true);
+      window.removeEventListener("resize", sync);
+    };
+  }, [colorPickerCatId]);
+
+  useEffect(() => {
+    if (!colorPickerCatId) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      const picker = document.getElementById("category-color-picker-popover");
+      const btn = colorSwatchRefs.current[colorPickerCatId];
+      if (picker?.contains(t) || btn?.contains(t)) return;
+      setColorPickerCatId(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [colorPickerCatId]);
 
   const filteredApps = useMemo(() => {
     if (!search.trim()) return allApps;
@@ -415,9 +475,13 @@ export function CategoryManagerModal({
                           )}
                         </button>
 
-                        {/* Color swatch / picker */}
+                        {/* Color swatch / picker (popover portaled to body to avoid scroll clipping) */}
                         <div className="relative">
                           <button
+                            type="button"
+                            ref={(el) => {
+                              colorSwatchRefs.current[cat.id] = el;
+                            }}
                             onClick={() =>
                               setColorPickerCatId(
                                 colorPickerCatId === cat.id ? null : cat.id
@@ -426,33 +490,6 @@ export function CategoryManagerModal({
                             className="w-4 h-4 rounded-md cursor-pointer ring-1 ring-white/10 hover:ring-white/30 transition-all"
                             style={{ backgroundColor: cat.color }}
                           />
-                          <AnimatePresence>
-                            {colorPickerCatId === cat.id && (
-                              <motion.div
-                                initial={{ opacity: 0, scale: 0.9 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                exit={{ opacity: 0, scale: 0.9 }}
-                                className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-xl p-2 shadow-xl"
-                              >
-                                <div className="grid grid-cols-8 gap-1">
-                                  {PRESET_COLORS.map((c) => (
-                                    <button
-                                      key={c}
-                                      onClick={() =>
-                                        handleChangeCategoryColor(cat.id, c)
-                                      }
-                                      className={`w-5 h-5 rounded-md transition-all cursor-pointer ${
-                                        cat.color === c
-                                          ? "ring-2 ring-white/60 scale-110"
-                                          : "hover:scale-110"
-                                      }`}
-                                      style={{ backgroundColor: c }}
-                                    />
-                                  ))}
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
                         </div>
 
                         {/* Name (editable) */}
@@ -544,7 +581,7 @@ export function CategoryManagerModal({
                                     {app.name}
                                   </span>
                                   <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
-                                    {app.minutes}m
+                                    {formatAppMinutesForDisplay(app.minutes)}m
                                   </span>
                                   {/* Category reassign dropdown */}
                                   <PremiumSelect
@@ -613,6 +650,45 @@ export function CategoryManagerModal({
               </div>
             </div>
           </motion.div>
+
+          {typeof document !== "undefined" &&
+            colorPickerCatId &&
+            colorPickerCoords &&
+            pickerCategory &&
+            createPortal(
+              <motion.div
+                id="category-color-picker-popover"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.15 }}
+                className="fixed z-[9999] bg-popover border border-border rounded-xl p-2 shadow-xl"
+                style={{
+                  top: colorPickerCoords.top,
+                  left: colorPickerCoords.left,
+                }}
+              >
+                <div className="grid grid-cols-8 gap-1">
+                  {PRESET_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => {
+                        handleChangeCategoryColor(pickerCategory.id, c);
+                        setColorPickerCatId(null);
+                      }}
+                      className={`w-5 h-5 rounded-md transition-all cursor-pointer ${
+                        pickerCategory.color === c
+                          ? "ring-2 ring-white/60 scale-110"
+                          : "hover:scale-110"
+                      }`}
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                </div>
+              </motion.div>,
+              document.body,
+            )}
         </motion.div>
       )}
     </AnimatePresence>

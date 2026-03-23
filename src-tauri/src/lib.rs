@@ -15,7 +15,11 @@ mod startup;
 
 use app_state::AppState;
 use config::AppPaths;
-use tauri::{ Manager, tray::{TrayIconBuilder, TrayIconEvent, TrayIcon} };
+use tauri::{
+    menu::{Menu, MenuId, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    Manager,
+};
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -80,16 +84,42 @@ pub fn run() {
             network_monitor::start_network_monitor();
 
             // Create a system tray icon so the app can live in the tray when "closed".
+            // Left click: show/focus main window. Right click: context menu with Quit.
             let app_handle = app.handle().clone();
             if let Some(icon) = app_handle.default_window_icon() {
+                let quit_id = MenuId::new("tray-quit");
+                let quit_item = MenuItem::with_id(
+                    &app_handle,
+                    quit_id.clone(),
+                    "Quit",
+                    true,
+                    None::<&str>,
+                )?;
+                let tray_menu = Menu::with_items(&app_handle, &[&quit_item])?;
+
                 let _tray: TrayIcon = TrayIconBuilder::new()
                     .icon(icon.clone())
+                    .menu(&tray_menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(move |app, event| {
+                        if event.id() == &quit_id {
+                            app.exit(0);
+                        }
+                    })
                     .on_tray_icon_event(|tray, event| {
-                        // Single left click on tray icon restores the main window.
-                        if let TrayIconEvent::Click { .. } = event {
-                            if let Some(window) = tray.app_handle().get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
+                        if let TrayIconEvent::Click {
+                            button,
+                            button_state,
+                            ..
+                        } = event
+                        {
+                            if button == MouseButton::Left
+                                && button_state == MouseButtonState::Up
+                            {
+                                if let Some(window) = tray.app_handle().get_webview_window("main") {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
                             }
                         }
                     })

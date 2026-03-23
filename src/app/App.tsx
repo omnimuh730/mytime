@@ -64,7 +64,7 @@ const PAGE_CONFIG: Record<string, { title: string; subtitle: string; icon: typeo
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [isDark, setIsDark] = useState(true);
+  const [isDark, setIsDark] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(0);
   const dashboardSummaryMode =
     activeTab === "dashboard"

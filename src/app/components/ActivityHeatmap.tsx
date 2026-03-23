@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useActivityHeatmap } from "../hooks/useActivityHeatmap";
 
 const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -16,14 +17,71 @@ const getColor = (value: number) => {
   return "rgba(99, 102, 241, 0.95)";
 };
 
+type HoveredCell = {
+  dayIndex: number;
+  hourIndex: number;
+  value: number;
+};
+
 export function ActivityHeatmap() {
-  const [hoveredCell, setHoveredCell] = useState<{
-    day: number;
-    hour: number;
-  } | null>(null);
+  const [hoveredCell, setHoveredCell] = useState<HoveredCell | null>(null);
+  const hoverTargetRef = useRef<HTMLDivElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const { grid, isLoading, error } = useActivityHeatmap();
 
   const heatmapData = grid ?? [];
+
+  const updateTooltipPosition = useCallback(() => {
+    const el = hoverTargetRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setTooltipPos({
+      x: rect.left + rect.width / 2,
+      y: rect.top,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!hoveredCell) {
+      hoverTargetRef.current = null;
+      return;
+    }
+    updateTooltipPosition();
+    const onScrollOrResize = () => updateTooltipPosition();
+    const scrollEl = scrollContainerRef.current;
+    window.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
+    scrollEl?.addEventListener("scroll", onScrollOrResize);
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+      scrollEl?.removeEventListener("scroll", onScrollOrResize);
+    };
+  }, [hoveredCell, updateTooltipPosition]);
+
+  const tooltipPortal =
+    hoveredCell &&
+    typeof document !== "undefined" &&
+    createPortal(
+      <div
+        className="pointer-events-none fixed z-[9999] rounded-lg border border-border bg-card px-2 py-1.5 shadow-xl whitespace-nowrap"
+        style={{
+          left: tooltipPos.x,
+          top: tooltipPos.y,
+          transform: "translate(-50%, calc(-100% - 8px))",
+        }}
+        role="tooltip"
+      >
+        <p className="text-xs text-foreground">
+          {days[hoveredCell.dayIndex]} {hours[hoveredCell.hourIndex]}:00
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Activity: {hoveredCell.value}%
+        </p>
+      </div>,
+      document.body,
+    );
 
   return (
     <div className="bg-card rounded-2xl border border-border p-4 sm:p-6">
@@ -52,76 +110,83 @@ export function ActivityHeatmap() {
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      <div
+        ref={scrollContainerRef}
+        className="overflow-x-auto overflow-y-visible"
+      >
         {isLoading && heatmapData.length === 0 ? (
           <div className="min-h-[200px] flex items-center justify-center text-muted-foreground text-sm">
             Loading heatmap…
           </div>
         ) : (
-        <div className="min-w-[600px]">
-          {/* Hour labels */}
-          <div className="flex mb-1 ml-10">
-            {hours.map((h, i) =>
-              i % 3 === 0 ? (
-                <div
-                  key={h}
-                  className="text-xs text-muted-foreground"
-                  style={{ width: `${100 / 24}%` }}
-                >
-                  {h}:00
-                </div>
-              ) : (
-                <div key={h} style={{ width: `${100 / 24}%` }} />
-              )
-            )}
-          </div>
-
-          {/* Heatmap Grid */}
-          {days.map((day, dayIndex) => (
-            <div key={day} className="flex items-center gap-1 mb-1">
-              <span className="text-xs text-muted-foreground w-9 shrink-0">
-                {day}
-              </span>
-              <div className="flex flex-1 gap-px">
-                {hours.map((_, hourIndex) => {
-                  const value =
-                    heatmapData[dayIndex]?.[hourIndex] ?? 0;
-                  const isHovered =
-                    hoveredCell?.day === dayIndex &&
-                    hoveredCell?.hour === hourIndex;
-                  return (
-                    <div
-                      key={hourIndex}
-                      className="flex-1 h-6 rounded-sm cursor-pointer transition-all duration-150 relative"
-                      style={{
-                        backgroundColor: getColor(value),
-                        transform: isHovered ? "scale(1.3)" : "scale(1)",
-                        zIndex: isHovered ? 10 : 0,
-                      }}
-                      onMouseEnter={() =>
-                        setHoveredCell({ day: dayIndex, hour: hourIndex })
-                      }
-                      onMouseLeave={() => setHoveredCell(null)}
-                    >
-                      {isHovered && (
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-card border border-border rounded-lg px-2 py-1 shadow-xl whitespace-nowrap z-20">
-                          <p className="text-xs text-foreground">
-                            {day} {hours[hourIndex]}:00
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            Activity: {value}%
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+          <div className="min-w-[600px]">
+            {/* Hour labels */}
+            <div className="flex mb-1 ml-10">
+              {hours.map((h, i) =>
+                i % 3 === 0 ? (
+                  <div
+                    key={h}
+                    className="text-xs text-muted-foreground"
+                    style={{ width: `${100 / 24}%` }}
+                  >
+                    {h}:00
+                  </div>
+                ) : (
+                  <div key={h} style={{ width: `${100 / 24}%` }} />
+                )
+              )}
             </div>
-          ))}
-        </div>
+
+            {/* Heatmap Grid */}
+            {days.map((day, dayIndex) => (
+              <div key={day} className="flex items-center gap-1 mb-1">
+                <span className="text-xs text-muted-foreground w-9 shrink-0">
+                  {day}
+                </span>
+                <div className="flex flex-1 gap-px">
+                  {hours.map((_, hourIndex) => {
+                    const value =
+                      heatmapData[dayIndex]?.[hourIndex] ?? 0;
+                    const isHovered =
+                      hoveredCell?.dayIndex === dayIndex &&
+                      hoveredCell?.hourIndex === hourIndex;
+                    return (
+                      <div
+                        key={hourIndex}
+                        className="flex-1 h-6 rounded-sm cursor-pointer transition-all duration-150 relative"
+                        style={{
+                          backgroundColor: getColor(value),
+                          transform: isHovered ? "scale(1.3)" : "scale(1)",
+                          zIndex: isHovered ? 10 : 0,
+                        }}
+                        onMouseEnter={(e) => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          hoverTargetRef.current = e.currentTarget;
+                          setTooltipPos({
+                            x: rect.left + rect.width / 2,
+                            y: rect.top,
+                          });
+                          setHoveredCell({
+                            dayIndex,
+                            hourIndex,
+                            value,
+                          });
+                        }}
+                        onMouseLeave={() => {
+                          hoverTargetRef.current = null;
+                          setHoveredCell(null);
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
+
+      {tooltipPortal}
     </div>
   );
 }

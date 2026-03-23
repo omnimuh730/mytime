@@ -200,7 +200,13 @@ interface SliceInfo {
 }
 
 function formatTime(minutes: number): string {
-  const totalSeconds = Math.max(1, Math.round(minutes * 60));
+  if (minutes <= 0) {
+    return "0s";
+  }
+  const totalSeconds = Math.round(minutes * 60);
+  if (totalSeconds < 1) {
+    return "<1s";
+  }
   if (totalSeconds < 60) {
     return `${totalSeconds}s`;
   }
@@ -224,7 +230,10 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
   const [drillPath, setDrillPath] = useState<string[]>([]);
   const [hoveredSlice, setHoveredSlice] = useState<SliceInfo | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
-  const resolvedApps = allApps ?? ALL_APPS;
+  /** `undefined` = demo/mock data; empty array = real API returned no apps today */
+  const resolvedApps = allApps === undefined ? ALL_APPS : allApps;
+  const isEmptyRealData =
+    allApps !== undefined && allApps.length === 0;
 
   // Stateful categories & assignments
   const [categories, setCategories] =
@@ -232,6 +241,14 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
   const [assignments, setAssignments] = useState<Record<string, string>>(
     () => buildDefaultAssignments(resolvedApps)
   );
+
+  // Saved settings may omit "Others"; apps assigned to cat-others would otherwise vanish.
+  const categoriesForChart = useMemo(() => {
+    const ids = new Set(categories.map((c) => c.id));
+    if (ids.has("cat-others")) return categories;
+    const others = DEFAULT_CATEGORIES.find((c) => c.id === "cat-others");
+    return others ? [...categories, others] : categories;
+  }, [categories]);
 
   useEffect(() => {
     setAssignments((prev) => {
@@ -264,10 +281,17 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
   // Build sunburst data from categories + assignments
   const sunburstData: SunburstNode[] = useMemo(() => {
     const result: SunburstNode[] = [];
+    const categoryIds = new Set(categoriesForChart.map((c) => c.id));
 
-    for (const cat of categories) {
+    const categoryIdForApp = (app: AppEntry): string => {
+      const raw = assignments[app.id] || "cat-others";
+      if (categoryIds.has(raw)) return raw;
+      return categoryIds.has("cat-others") ? "cat-others" : categoriesForChart[0]?.id ?? raw;
+    };
+
+    for (const cat of categoriesForChart) {
       const catApps = resolvedApps.filter(
-        (app) => (assignments[app.id] || "cat-others") === cat.id
+        (app) => categoryIdForApp(app) === cat.id,
       );
       if (catApps.length === 0) continue;
 
@@ -289,7 +313,7 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
     }
 
     return result.sort((a, b) => b.minutes - a.minutes);
-  }, [categories, assignments, resolvedApps]);
+  }, [categoriesForChart, assignments, resolvedApps]);
 
   const cx = 200;
   const cy = 200;
@@ -341,7 +365,8 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
 
       nodes.forEach((node) => {
         const span = (node.minutes / parentTotal) * parentSpan;
-        if (span < 0.5) {
+        // Skip only truly negligible arcs (many tiny slices would otherwise disappear at 0.5°).
+        if (span < 0.08) {
           currentAngle += span;
           return;
         }
@@ -457,6 +482,18 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
         {/* SVG Chart */}
         <div className="flex items-center justify-center overflow-x-auto">
           <div className="relative min-w-[400px]">
+            {isEmptyRealData ? (
+              <div className="flex flex-col items-center justify-center min-h-[320px] text-center px-6">
+                <p className="text-muted-foreground text-sm max-w-sm">
+                  No application usage recorded for today yet. Usage appears here
+                  after focus sessions are saved to the database.
+                </p>
+                <p className="text-foreground text-2xl font-semibold mt-4 tabular-nums">
+                  0s
+                </p>
+                <p className="text-muted-foreground text-xs mt-1">All Apps</p>
+              </div>
+            ) : (
             <svg width="400" height="400" viewBox="0 0 400 400">
               {/* Subtle ring guides */}
               {[0, 1].map((level) => {
@@ -566,9 +603,10 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
                 {drillPath.length === 0 ? "All Apps" : currentParentName}
               </text>
             </svg>
+            )}
 
             {/* Hover Tooltip */}
-            {hoveredSlice && (
+            {hoveredSlice && !isEmptyRealData && (
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10">
                 <div className="bg-popover border border-border rounded-xl p-3 shadow-xl min-w-[160px] -translate-y-24">
                   <div className="flex items-center gap-2 mb-1.5">
@@ -591,10 +629,12 @@ export function SunburstChart({ allApps }: SunburstChartProps = {}) {
                   <div className="flex items-center justify-between text-[11px]">
                     <span className="text-muted-foreground">Share</span>
                     <span className="text-foreground tabular-nums">
-                      {Math.round(
-                        (hoveredSlice.node.minutes / totalMinutes) *
-                          100
-                      )}
+                      {totalMinutes > 0
+                        ? Math.round(
+                            (hoveredSlice.node.minutes / totalMinutes) *
+                              100,
+                          )
+                        : 0}
                       %
                     </span>
                   </div>
