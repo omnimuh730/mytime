@@ -1,7 +1,12 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --font-size: 16px;
+  /**
+   * Fluid root font size — scales with viewport width so cards, stats, and UI text
+   * stay readable on small windows without manual breakpoints everywhere.
+   * (Rem-based Tailwind utilities inherit from this.)
+   */
+  --font-size: clamp(13px, 0.42vw + 10px, 17px);
   --background: #0a0b14;
   --foreground: #e4e4ef;
   --card: #12131f;

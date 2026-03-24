@@ -11,7 +11,7 @@ use std::{
     },
     thread,
 };
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tracing::{error, info, warn};
 
 #[derive(Clone, Debug, Serialize)]
@@ -103,6 +103,26 @@ impl TryFrom<HelperInputMonitorEventDto> for InputMonitorEventDto {
 const INPUT_MONITOR_EVENT: &str = "input-monitor://event";
 const INPUT_HOOK_HELPER_ARG: &str = "--mytime-input-hook-helper";
 
+/// Push input events to the webview only when the main window is visible.
+/// When the app is hidden to the tray, skipping emits reduces WebView2 IPC pressure
+/// (helps avoid long-run / resume instability on Windows).
+#[cfg(windows)]
+fn emit_input_monitor_if_window_visible<R: Runtime>(
+    app: &AppHandle<R>,
+    event: InputMonitorEventDto,
+) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(visible) = window.is_visible() {
+            if !visible {
+                return;
+            }
+        }
+    }
+    if let Err(error) = app.emit(INPUT_MONITOR_EVENT, event) {
+        error!(?error, "failed to emit input monitor event");
+    }
+}
+
 static EVENT_SENDER: OnceLock<Sender<InputMonitorEventDto>> = OnceLock::new();
 static HELPER_CHILD: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
 static LAST_MOVE_TICK: AtomicU64 = AtomicU64::new(0);
@@ -141,9 +161,7 @@ fn start_inprocess_global_input_monitor<R: Runtime>(app: AppHandle<R>) {
         for event in rx {
             crate::input_aggregator::record(&event);
             crate::app_usage_monitor::record_input_event(&event);
-            if let Err(error) = emitter_app.emit(INPUT_MONITOR_EVENT, event) {
-                error!(?error, "failed to emit input monitor event");
-            }
+            emit_input_monitor_if_window_visible(&emitter_app, event);
         }
     });
 
@@ -195,9 +213,7 @@ fn start_helper_input_monitor<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
                         Ok(event) => {
                             crate::input_aggregator::record(&event);
                             crate::app_usage_monitor::record_input_event(&event);
-                            if let Err(error) = app.emit(INPUT_MONITOR_EVENT, event) {
-                                error!(?error, "failed to emit helper input monitor event");
-                            }
+                            emit_input_monitor_if_window_visible(&app, event);
                         }
                         Err(error) => {
                             error!(%error, "failed to map helper input event");

@@ -111,7 +111,7 @@ export function NetworkUsageChart({ downloadBytes = 0, uploadBytes = 0 }: Props)
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={history}>
+            <AreaChart data={history} margin={{ top: 8, right: 6, left: 4, bottom: 4 }}>
               <defs>
                 <linearGradient id="dlGradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.3} />
@@ -125,7 +125,11 @@ export function NetworkUsageChart({ downloadBytes = 0, uploadBytes = 0 }: Props)
               <CartesianGrid strokeDasharray="3 3" stroke="var(--grid-stroke)" vertical={false} />
               <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "var(--axis-tick)", fontSize: 10 }} interval="preserveStartEnd" />
               <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--axis-tick)", fontSize: 11 }} unit=" MB" />
-              <Tooltip content={<CustomTooltip />} />
+              <Tooltip
+                content={<CustomTooltip />}
+                allowEscapeViewBox={{ x: true, y: true }}
+                wrapperStyle={{ zIndex: 50, outline: "none" }}
+              />
               <Area type="monotone" dataKey="download" stroke="#a78bfa" strokeWidth={2} fill="url(#dlGradient)" dot={false} activeDot={{ r: 4, fill: "#a78bfa", stroke: "#a78bfa" }} />
               <Area type="monotone" dataKey="upload" stroke="#34d399" strokeWidth={2} fill="url(#ulGradient)" dot={false} activeDot={{ r: 4, fill: "#34d399", stroke: "#34d399" }} />
             </AreaChart>

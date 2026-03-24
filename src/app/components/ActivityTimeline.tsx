@@ -139,9 +139,13 @@ export function ActivityTimeline({
         />
       </div>
 
-      <div className="h-[160px] sm:h-[180px] min-w-0">
+      <div className="h-[160px] sm:h-[180px] min-w-0 overflow-visible [&_.recharts-wrapper]:overflow-visible">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={isLoading ? [] : data} stackOffset="none">
+          <BarChart
+            data={isLoading ? [] : data}
+            stackOffset="none"
+            margin={{ top: 28, right: 6, left: 4, bottom: 4 }}
+          >
             <CartesianGrid
               key="at-grid"
               strokeDasharray="3 3"
@@ -174,6 +178,8 @@ export function ActivityTimeline({
             <Tooltip
               content={<CustomTooltip isHourly={isHourly} />}
               key="at-tooltip"
+              allowEscapeViewBox={{ x: true, y: true }}
+              wrapperStyle={{ zIndex: 50, outline: "none" }}
             />
             <ReferenceLine
               key="at-avg"

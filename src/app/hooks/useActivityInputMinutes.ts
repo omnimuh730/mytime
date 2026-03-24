@@ -3,9 +3,12 @@ import { useCallback, useEffect, useState } from "react";
 import { getActivityInputMinutes } from "../api/activity";
 import type { AppInputMinuteDto } from "../types/backend";
 
+import { useAdaptivePollInterval } from "./useAdaptivePollInterval";
+
 const DEFAULT_POLL_MS = 5_000;
 
 export function useActivityInputMinutes(pollMs = DEFAULT_POLL_MS) {
+  const adaptiveMs = useAdaptivePollInterval(pollMs);
   const [inputMinutes, setInputMinutes] = useState<AppInputMinuteDto[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -28,9 +31,9 @@ export function useActivityInputMinutes(pollMs = DEFAULT_POLL_MS) {
     void refresh();
     const id = window.setInterval(() => {
       void refresh();
-    }, pollMs);
+    }, adaptiveMs);
     return () => window.clearInterval(id);
-  }, [pollMs, refresh]);
+  }, [adaptiveMs, refresh]);
 
   return {
     inputMinutes,
